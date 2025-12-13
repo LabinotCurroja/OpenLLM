@@ -195,6 +195,10 @@ class BotMessage(Markdown):
 
 
 class ChatApp(App):
+    def __init__(self):
+        super().__init__()
+        self.conversation_history: list[dict] = []
+
     CSS = """
     Screen {
         background: #131313;
@@ -351,6 +355,9 @@ class ChatApp(App):
         await messages_container.mount(UserMessage(f"You: {text}"))
         messages_container.scroll_end(animate=False)
 
+        # Add user message to conversation history
+        self.conversation_history.append({"role": "user", "content": text})
+
         # Create thinking message first (will be replaced when done thinking)
         thinking_message = ThinkingMessage()
         await messages_container.mount(thinking_message)
@@ -368,7 +375,7 @@ class ChatApp(App):
     def _do_llm_request(self, text: str, thinking_message: ThinkingMessage, bot_message: BotMessage, messages_container: VerticalScroll) -> None:
         """Send message to LLM server and stream response (runs in thread)"""
         payload = {
-            "messages": [{"role": "user", "content": text}],
+            "messages": list(self.conversation_history),
             "stream": True,
             "max_tokens": 2048,
             "temperature": 0.7,
@@ -454,8 +461,16 @@ class ChatApp(App):
                     # Remove thinking tags from response
                     clean_response = full_response.replace("<think>", "").replace("</think>", "").strip()
                     self.call_from_thread(bot_message.update, clean_response if clean_response else "*No response from server*")
+                    # Add assistant response to history (clean version without thinking tags)
+                    if clean_response:
+                        self.conversation_history.append({"role": "assistant", "content": clean_response})
                 else:
                     self.call_from_thread(bot_message.update, "*No response from server*")
+            else:
+                # Add the final response to history (content after </think>)
+                response_text = full_response.split("</think>", 1)[-1].strip() if "</think>" in full_response else full_response.replace("<think>", "").strip()
+                if response_text:
+                    self.conversation_history.append({"role": "assistant", "content": response_text})
                 
         except requests.exceptions.ConnectionError:
             self.call_from_thread(thinking_message.remove)

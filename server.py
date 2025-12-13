@@ -30,7 +30,7 @@ from transformers import AutoTokenizer
 # ============================================================================
 
 MODEL_NAME = "qwen3-4b"
-DEFAULT_MAX_TOKENS = 2048
+DEFAULT_MAX_TOKENS = 4096
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_P = 0.9
 DEFAULT_TOP_K = 50

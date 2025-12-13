@@ -540,7 +540,7 @@ def generate_streaming(
     model: Qwen3ForCausalLM,
     tokenizer,
     prompt: str,
-    max_new_tokens: int = 2048,
+    max_new_tokens: int = 4096,
     temperature: float = 0.8,
     top_p: float = 0.9,
     top_k: int = 50,
