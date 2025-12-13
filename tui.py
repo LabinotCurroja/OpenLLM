@@ -4,6 +4,7 @@ import json
 import requests
 import subprocess
 import platform
+import time
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll, Container, Horizontal
 from textual.widgets import Input, Static, Label, Markdown, LoadingIndicator
@@ -76,6 +77,11 @@ class StatusIndicator(Static):
 
 class StatsDisplay(Static):
     """Stats display on the right"""
+    pass
+
+
+class TokenStats(Static):
+    """Token generation stats display below input"""
     pass
 
 
@@ -317,6 +323,16 @@ class ChatApp(App):
     Input > .input--placeholder {
         color: #666;
     }
+
+    /* ===== TOKEN STATS ===== */
+    #token-stats {
+        height: 1;
+        width: 100%;
+        text-align: left;
+        color: #666;
+        padding: 0 2;
+        margin-bottom: 1;
+    }
     """
 
     def compose(self) -> ComposeResult:
@@ -325,6 +341,7 @@ class ChatApp(App):
 
         with Container(id="input-container"):
             yield Input(placeholder="Type a message...")
+        yield TokenStats("", id="token-stats")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -359,8 +376,10 @@ class ChatApp(App):
 
     def _do_llm_request(self, text: str, thinking_message: ThinkingMessage, bot_message: BotMessage, messages_container: VerticalScroll) -> None:
         """Send message to LLM server and stream response (runs in thread)"""
+        # Limit context to last 12 messages to prevent unbounded growth
+        recent_messages = self.conversation_history[-12:] if len(self.conversation_history) > 12 else self.conversation_history
         payload = {
-            "messages": list(self.conversation_history),
+            "messages": list(recent_messages),
             "stream": True,
             "max_tokens": 2048,
             "temperature": 0.7,
@@ -385,6 +404,10 @@ class ChatApp(App):
             in_thinking = False
             thinking_done = False
             
+            # Token counting for tokens/sec
+            token_count = 0
+            start_time = time.time()
+            
             for line in response.iter_lines():
                 if line:
                     line_str = line.decode("utf-8")
@@ -397,6 +420,14 @@ class ChatApp(App):
                             content = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
                             if content:
                                 full_response += content
+                                token_count += 1
+                                
+                                # Update tokens/sec every few tokens
+                                if token_count % 5 == 0:
+                                    elapsed = time.time() - start_time
+                                    if elapsed > 0:
+                                        tps = token_count / elapsed
+                                        self.call_from_thread(self._update_tps, f"{tps:.1f} tok/s")
                                 
                                 # Check for thinking tags
                                 if "<think>" in full_response and not in_thinking:
@@ -438,6 +469,12 @@ class ChatApp(App):
                         except json.JSONDecodeError:
                             pass
             
+            # Show final tokens/sec
+            elapsed = time.time() - start_time
+            if elapsed > 0 and token_count > 0:
+                final_tps = token_count / elapsed
+                self.call_from_thread(self._update_tps, f"{final_tps:.1f} tok/s ({token_count} tokens)")
+            
             # If we never got out of thinking mode, clean up
             if not thinking_done:
                 self.call_from_thread(thinking_message.remove)
@@ -473,6 +510,20 @@ class ChatApp(App):
     def _mount_widget(self, widget, container) -> None:
         """Helper to mount a widget from thread"""
         container.mount(widget)
+    
+    def _update_tps(self, tps: str) -> None:
+        """Update tokens per second below the input"""
+        try:
+            self.query_one("#token-stats", TokenStats).update(tps)
+        except Exception:
+            pass
+    
+    def _clear_tps(self) -> None:
+        """Clear tokens per second display"""
+        try:
+            self.query_one("#token-stats", TokenStats).update("")
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     ChatApp().run()
