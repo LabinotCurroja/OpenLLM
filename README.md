@@ -76,7 +76,7 @@ pip install -r requirements.txt
 ### Run the Chat TUI
 
 ```bash
-python chat_tui.py
+python tui.py
 ```
 
 This launches an interactive terminal interface for chatting with the model.
@@ -250,8 +250,7 @@ The KV cache adds additional memory during generation:
 OpenLLM/
 ├── qwen3_pytorch.py   # Core model implementation
 ├── server.py          # OpenAI-compatible API server
-├── chat_tui.py        # Terminal UI for interactive chat
-├── tui.py             # Alternative TUI implementation
+├── tui.py             # Terminal UI for interactive chat
 ├── requirements.txt   # Python dependencies
 ├── assets/
 │   └── dragon.png     # Logo
@@ -281,4 +280,4 @@ MIT License - feel free to use, modify, and distribute.
 
 ---
 
-**Note**: This is an educational implementation focused on clarity and understanding. For production workloads with maximum performance, consider using optimized inference frameworks like vLLM, TensorRT-LLM, or llama.cpp.
+**Why OpenLLM?** This implementation gives you **full control** over your LLM inference with ~80% of the efficiency of state-of-the-art frameworks like vLLM or TensorRT-LLM. It's production-ready for many use cases: local development, privacy-sensitive applications, edge deployment, and anywhere you need to **keep your data on your own hardware**. No API calls, no data leaving your machine, no vendor lock-in.
