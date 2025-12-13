@@ -23,42 +23,27 @@ def get_memory_usage() -> str:
 
 
 def get_gpu_usage() -> str:
-    """Get GPU usage - for macOS uses ioreg to get GPU utilization"""
+    """Get GPU/unified memory usage on Apple Silicon via ioreg"""
     try:
-        if platform.system() == "Darwin":  # macOS
-            # Use ioreg to get GPU utilization on Apple Silicon
+        if platform.system() == "Darwin":  # macOS with Apple Silicon
+            # Use ioreg to get actual GPU memory from AGXAccelerator
             result = subprocess.run(
-                ["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"],
+                ["ioreg", "-r", "-c", "AGXAccelerator"],
                 capture_output=True,
                 text=True,
                 timeout=2
             )
-            output = result.stdout
-            # Look for GPU utilization in the output
-            for line in output.split("\n"):
-                if "PerformanceStatistics" in line or "Device Utilization" in line or "GPU" in line:
-                    # Try to extract utilization percentage
-                    if "%" in line:
-                        import re
-                        match = re.search(r'(\d+)\s*%', line)
-                        if match:
-                            return f"{match.group(1)}%"
-            
-            # Fallback: Try to get GPU activity from powermetrics-style info via sysctl
-            try:
-                result = subprocess.run(
-                    ["sysctl", "machdep.cpu"],
-                    capture_output=True,
-                    text=True,
-                    timeout=1
-                )
-            except Exception:
-                pass
-            
-            # Final fallback for MPS: show PyTorch memory usage
-            if HAS_TORCH and torch.backends.mps.is_available():
-                mem_mb = torch.mps.current_allocated_memory() / 1024 / 1024
-                return f"{mem_mb:.0f}MB"
+            if result.returncode == 0:
+                import re
+                # Look for "In use system memory"=NNNNNN in the output
+                match = re.search(r'"In use system memory"=(\d+)', result.stdout)
+                if match:
+                    mem_bytes = int(match.group(1))
+                    mem_gb = mem_bytes / 1024 / 1024 / 1024
+                    if mem_gb >= 1:
+                        return f"{mem_gb:.1f}GB"
+                    else:
+                        return f"{mem_bytes / 1024 / 1024:.0f}MB"
             return "N/A"
         
         elif HAS_TORCH and torch.cuda.is_available():
@@ -139,7 +124,7 @@ class TopBar(Horizontal):
         
         try:
             self.query_one("#status", StatusIndicator).update(status)
-            self.query_one("#stats", StatsDisplay).update(f"System RAM usage: {self.memory}  │  GPU: {self.gpu}")
+            self.query_one("#stats", StatsDisplay).update(f"RAM: {self.memory}  │  GPU Mem: {self.gpu}")
         except Exception:
             pass
 

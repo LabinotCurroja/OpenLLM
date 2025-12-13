@@ -108,6 +108,10 @@ def generate_tokens(
     config = model.config
     dtype = next(model.parameters()).dtype
     
+    # Use an incremental decoder to properly handle multi-byte UTF-8 characters
+    # that may be split across multiple tokens
+    token_buffer = []
+    
     with torch.inference_mode():
         # Format as chat using the tokenizer's chat template
         text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -167,20 +171,41 @@ def generate_tokens(
             
             # Check for EOS
             if token_id == tokenizer.eos_token_id:
+                # Flush any remaining tokens in buffer before ending
+                if token_buffer:
+                    final_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
+                    if final_text:
+                        generated_text += final_text
+                        yield final_text
                 break
             
-            # Decode this token
-            token_text = tokenizer.decode([token_id], skip_special_tokens=True)
+            # Add token to buffer and decode incrementally
+            # This handles multi-byte UTF-8 characters that span multiple tokens
+            token_buffer.append(token_id)
             
-            if token_text:
-                generated_text += token_text
-                yield token_text
+            # Try to decode the buffer - if it produces valid text, yield it
+            # Keep a sliding window to handle incomplete sequences
+            decoded_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
+            
+            # Check if the decoded text ends with a replacement character (incomplete UTF-8)
+            # If so, buffer more tokens before yielding
+            if decoded_text and not decoded_text.endswith('\ufffd') and not decoded_text.endswith('�'):
+                # Successfully decoded - yield and clear buffer
+                generated_text += decoded_text
+                yield decoded_text
+                token_buffer = []
                 
                 # Check for stop sequences
                 if stop:
                     for stop_seq in stop:
                         if stop_seq in generated_text:
                             return
+            elif len(token_buffer) > 10:
+                # Safety limit - if buffer gets too large, force decode and yield
+                # This prevents infinite buffering
+                generated_text += decoded_text
+                yield decoded_text
+                token_buffer = []
             
             # Decode step: only process the new token with KV cache
             position_ids = torch.tensor([[current_pos]], device=device)
@@ -188,6 +213,12 @@ def generate_tokens(
             kv_cache.advance(1)
             next_token_logits = logits[:, -1, :]
             current_pos += 1
+        
+        # Flush any remaining tokens in buffer after loop ends (max_tokens reached)
+        if token_buffer:
+            final_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
+            if final_text:
+                yield final_text
 
 
 def generate_full(

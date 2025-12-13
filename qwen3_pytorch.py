@@ -587,6 +587,9 @@ def generate_streaming(
     
     current_pos = prompt_len
     
+    # Buffer for incremental decoding to handle multi-byte UTF-8 characters
+    token_buffer = []
+    
     for _ in range(max_new_tokens):
         # Apply temperature
         if temperature > 0:
@@ -615,12 +618,26 @@ def generate_streaming(
         
         # Check for EOS
         if token_id == tokenizer.eos_token_id:
+            # Flush remaining buffer before ending
+            if token_buffer:
+                final_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
+                if final_text:
+                    print(final_text, end="", flush=True)
             break
         
-        # Decode and stream the new token
-        all_tokens = tokenizer.decode([token_id], skip_special_tokens=True)
-        if all_tokens:
-            print(all_tokens, end="", flush=True)
+        # Add token to buffer and decode incrementally
+        # This handles multi-byte UTF-8 characters that span multiple tokens
+        token_buffer.append(token_id)
+        decoded_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
+        
+        # Check if the decoded text ends with a replacement character (incomplete UTF-8)
+        if decoded_text and not decoded_text.endswith('\ufffd') and not decoded_text.endswith('�'):
+            print(decoded_text, end="", flush=True)
+            token_buffer = []
+        elif len(token_buffer) > 10:
+            # Safety limit - force decode if buffer gets too large
+            print(decoded_text, end="", flush=True)
+            token_buffer = []
         
         # Decode step: only process the new token with KV cache
         position_ids = torch.tensor([[current_pos]], device=device)
@@ -628,6 +645,12 @@ def generate_streaming(
         kv_cache.advance(1)  # Advance cache position by 1 token
         next_token_logits = logits[:, -1, :]
         current_pos += 1
+    
+    # Flush any remaining tokens after loop ends (max_tokens reached)
+    if token_buffer:
+        final_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
+        if final_text:
+            print(final_text, end="", flush=True)
     
     print()  # Final newline
 
