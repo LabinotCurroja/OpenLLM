@@ -16,9 +16,12 @@ import requests
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
-    # Look for .env in the same directory as this file
-    env_path = Path(__file__).parent / ".env"
+    # Look for .env in the project root (parent of server directory)
+    env_path = Path(__file__).parent.parent / ".env"
     load_dotenv(env_path)
+    # Also try server directory as fallback
+    env_path_server = Path(__file__).parent / ".env"
+    load_dotenv(env_path_server)
 except ImportError:
     pass  # python-dotenv not installed, rely on system env vars
 
@@ -275,14 +278,14 @@ To use a tool, output a tool call in this exact format:
 
 Important guidelines:
 - Use web_search when you need current information, recent events, facts you're uncertain about, or anything that changes over time
-- After making a tool call, wait for the results before continuing your response
+- When you make a tool call, you will receive the results in the next message
+- After receiving tool results, provide a complete and helpful response that incorporates the information
 - You can make multiple tool calls if needed
-- Always incorporate the tool results naturally into your response
-- If a search returns no results, acknowledge this and provide what information you can
+- Always cite or reference the information you found when answering
+- If a search returns no results or an error, acknowledge this and provide what information you can from your knowledge
 
-Example tool calls:
+Example tool call:
 <tool_call>{{"name": "web_search", "arguments": {{"query": "latest news about AI"}}}}</tool_call>
-<tool_call>{{"name": "get_current_time", "arguments": {{}}}}</tool_call>
 """
 
 

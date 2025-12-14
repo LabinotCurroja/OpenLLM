@@ -6,9 +6,11 @@ import subprocess
 import platform
 import time
 import asyncio
+from typing import Optional
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll, Container, Horizontal
-from textual.widgets import Input, Static, Label, Markdown, LoadingIndicator
+from textual.widgets import Input, Static, Label, Markdown, LoadingIndicator, OptionList
+from textual.widgets.option_list import Option
 from textual.reactive import reactive
 
 try:
@@ -225,6 +227,63 @@ class BotMessage(Markdown):
         self.update(self._markdown)
 
 
+# Slash commands configuration
+SLASH_COMMANDS = [
+    ("/clear", "Start a new conversation"),
+    ("/help", "Show help and keyboard shortcuts"),
+    ("/tools", "List available tools and their status"),
+    ("/tools on", "Enable tool calling"),
+    ("/tools off", "Disable tool calling"),
+    ("/status", "Show server and connection status"),
+    ("/model", "Show current model info"),
+]
+
+
+class SlashMenu(Container):
+    """A popup menu for slash commands"""
+    
+    def __init__(self):
+        super().__init__(id="slash-menu")
+        self._filter = ""
+    
+    def compose(self) -> ComposeResult:
+        option_list = OptionList(id="slash-options")
+        for cmd, desc in SLASH_COMMANDS:
+            option_list.add_option(Option(f"{cmd}  [dim]{desc}[/dim]", id=cmd))
+        yield option_list
+    
+    def filter_commands(self, text: str) -> None:
+        """Filter commands based on typed text"""
+        self._filter = text.lower()
+        option_list = self.query_one("#slash-options", OptionList)
+        option_list.clear_options()
+        
+        for cmd, desc in SLASH_COMMANDS:
+            if self._filter in cmd.lower() or self._filter in desc.lower():
+                option_list.add_option(Option(f"{cmd}  [dim]{desc}[/dim]", id=cmd))
+        
+        # Highlight first option if any
+        if option_list.option_count > 0:
+            option_list.highlighted = 0
+    
+    def get_selected_command(self) -> Optional[str]:
+        """Get the currently highlighted command"""
+        option_list = self.query_one("#slash-options", OptionList)
+        if option_list.highlighted is not None and option_list.option_count > 0:
+            option = option_list.get_option_at_index(option_list.highlighted)
+            return option.id
+        return None
+    
+    def move_highlight(self, direction: int) -> None:
+        """Move the highlight up or down"""
+        option_list = self.query_one("#slash-options", OptionList)
+        if option_list.option_count == 0:
+            return
+        current = option_list.highlighted or 0
+        new_index = (current + direction) % option_list.option_count
+        option_list.highlighted = new_index
+
+
 class ChatApp(App):
     SYSTEM_PROMPT = """You are a helpful assistant called Eve. You never use emojis, and always respond in a concise and clear manner. When you <think>, its important that you dont spend too much time on simple questions. If a user says hi, you just need to greet them back. """
 
@@ -376,11 +435,47 @@ class ChatApp(App):
         padding: 0 2;
         margin-bottom: 1;
     }
+
+    /* ===== SLASH MENU ===== */
+    #slash-menu {
+        display: none;
+        layer: above;
+        dock: bottom;
+        height: auto;
+        max-height: 10;
+        width: 50;
+        background: #1e1e2e;
+        border: round #7aa2f7;
+        padding: 0;
+        margin: 0 2 1 2;
+    }
+
+    #slash-menu.visible {
+        display: block;
+    }
+
+    #slash-options {
+        height: auto;
+        max-height: 8;
+        background: transparent;
+        border: none;
+        padding: 0;
+    }
+
+    #slash-options > .option-list--option {
+        padding: 0 1;
+    }
+
+    #slash-options > .option-list--option-highlighted {
+        background: #3a3a5a;
+        color: #7aa2f7;
+    }
     """
 
     def compose(self) -> ComposeResult:
         yield TopBar()
         yield VerticalScroll(id="messages")
+        yield SlashMenu()
 
         with Container(id="input-container"):
             yield Input(placeholder="Type a message...")
@@ -388,10 +483,72 @@ class ChatApp(App):
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+        self._slash_menu_visible = False
+
+    def _show_slash_menu(self) -> None:
+        """Show the slash command menu"""
+        menu = self.query_one("#slash-menu", SlashMenu)
+        menu.add_class("visible")
+        self._slash_menu_visible = True
+
+    def _hide_slash_menu(self) -> None:
+        """Hide the slash command menu"""
+        menu = self.query_one("#slash-menu", SlashMenu)
+        menu.remove_class("visible")
+        self._slash_menu_visible = False
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Handle input changes to show/hide slash menu"""
+        text = event.value
+        
+        if text.startswith("/"):
+            self._show_slash_menu()
+            menu = self.query_one("#slash-menu", SlashMenu)
+            menu.filter_commands(text)
+        else:
+            self._hide_slash_menu()
+
+    def on_key(self, event) -> None:
+        """Handle key events for slash menu navigation"""
+        if not self._slash_menu_visible:
+            return
+        
+        menu = self.query_one("#slash-menu", SlashMenu)
+        
+        if event.key == "up":
+            menu.move_highlight(-1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "down":
+            menu.move_highlight(1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "tab":
+            cmd = menu.get_selected_command()
+            if cmd:
+                input_widget = self.query_one(Input)
+                input_widget.value = cmd + " "
+                input_widget.cursor_position = len(input_widget.value)
+                self._hide_slash_menu()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "escape":
+            self._hide_slash_menu()
+            self.query_one(Input).value = ""
+            event.prevent_default()
+            event.stop()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
+            return
+
+        self._hide_slash_menu()
+
+        # Handle slash commands
+        if text.startswith("/"):
+            event.input.value = ""
+            await self._handle_slash_command(text)
             return
 
         event.input.value = ""
@@ -500,6 +657,18 @@ class ChatApp(App):
                                     # Hide bot message again while thinking
                                     self.call_from_thread(self._hide_bot_message, bot_message)
                                     continue
+                                
+                                # Skip explicit <think> tag sent by server after tool results
+                                # (The server sends this to indicate new thinking round)
+                                if content.strip() == "<think>" or content == "<think>":
+                                    # Just ignore it, we already set in_thinking = True above
+                                    continue
+                                
+                                # Also handle <think> appearing at start of content
+                                if content.startswith("<think>"):
+                                    content = content[7:]  # Remove <think> prefix
+                                    if not content:
+                                        continue
                                 
                                 full_response += content
                                 round_response += content
@@ -610,7 +779,122 @@ class ChatApp(App):
     def _hide_bot_message(self, bot_message: BotMessage) -> None:
         """Hide the bot message (for when we go back to thinking after tool call)"""
         bot_message.display = False
-    
+
+    async def _handle_slash_command(self, command: str) -> None:
+        """Handle slash command execution"""
+        messages_container = self.query_one("#messages")
+        parts = command.strip().split()
+        cmd = parts[0].lower()
+        args = parts[1:] if len(parts) > 1 else []
+        
+        if cmd == "/clear":
+            self.conversation_history.clear()
+            for child in list(messages_container.children):
+                child.remove()
+            self._clear_tps()
+            
+        elif cmd == "/help":
+            help_text = """[bold cyan]=== Eve Chat Help ===[/bold cyan]
+
+[bold]Commands:[/bold]
+  [cyan]/clear[/cyan]      Clear all messages and history
+  [cyan]/help[/cyan]       Show this help menu
+  [cyan]/tools[/cyan]      List available tools
+  [cyan]/tools on[/cyan]   Enable tool calling
+  [cyan]/tools off[/cyan]  Disable tool calling  
+  [cyan]/status[/cyan]     Show server status
+  [cyan]/model[/cyan]      Show model information
+
+[bold]Keyboard Shortcuts:[/bold]
+  [dim]Ctrl+C[/dim]      Exit the application
+  [dim]Up/Down[/dim]     Navigate slash menu
+  [dim]Tab[/dim]         Autocomplete command
+  [dim]Escape[/dim]      Close slash menu"""
+            await messages_container.mount(Static(help_text, classes="message"))
+            
+        elif cmd == "/tools":
+            if args:
+                if args[0].lower() == "on":
+                    self.tools_enabled = True
+                    await messages_container.mount(Static("[green]Tool calling enabled.[/green]", classes="message"))
+                elif args[0].lower() == "off":
+                    self.tools_enabled = False
+                    await messages_container.mount(Static("[yellow]Tool calling disabled.[/yellow]", classes="message"))
+                else:
+                    await messages_container.mount(Static(f"[dim]Unknown option: {args[0]}. Use 'on' or 'off'.[/dim]", classes="message"))
+            else:
+                try:
+                    response = requests.get("http://localhost:8000/v1/tools", timeout=2.0)
+                    if response.status_code == 200:
+                        tools_data = response.json()
+                        tools_list = tools_data.get("tools", [])
+                        search_configured = tools_data.get("search_configured", False)
+                        
+                        status_icon = "[green]ON[/green]" if self.tools_enabled else "[red]OFF[/red]"
+                        tools_text = f"[bold cyan]=== Available Tools ===[/bold cyan]\n\nTool Calling: {status_icon}\n"
+                        
+                        for tool in tools_list:
+                            func = tool.get("function", {})
+                            name = func.get("name", "unknown")
+                            desc = func.get("description", "No description")[:60]
+                            
+                            if name == "web_search":
+                                status = "[green]ready[/green]" if search_configured else "[yellow]needs API key[/yellow]"
+                                tools_text += f"\n  [bold]web_search[/bold] ({status})\n    [dim]{desc}...[/dim]"
+                            elif name == "get_current_time":
+                                tools_text += f"\n  [bold]get_current_time[/bold] ([green]ready[/green])\n    [dim]{desc}[/dim]"
+                        
+                        await messages_container.mount(Static(tools_text, classes="message"))
+                    else:
+                        await messages_container.mount(Static("[red]Could not fetch tools from server[/red]", classes="message"))
+                except requests.exceptions.ConnectionError:
+                    await messages_container.mount(Static("[red]Server offline. Cannot list tools.[/red]", classes="message"))
+                except Exception as e:
+                    await messages_container.mount(Static(f"[red]Error: {str(e)}[/red]", classes="message"))
+            
+        elif cmd == "/status":
+            top_bar = self.query_one(TopBar)
+            server_icon = "[green]Online[/green]" if top_bar.server_ready else "[red]Offline[/red]"
+            tools_icon = "[green]Configured[/green]" if top_bar.tools_ready else "[yellow]Not configured[/yellow]"
+            calling_icon = "[green]Enabled[/green]" if self.tools_enabled else "[red]Disabled[/red]"
+            
+            status_text = f"""[bold cyan]=== Status ===[/bold cyan]
+
+  Server:       {server_icon}
+  Web Search:   {tools_icon}
+  Tool Calling: {calling_icon}
+  
+  RAM Usage:    {top_bar.memory}
+  GPU Memory:   {top_bar.gpu}"""
+            await messages_container.mount(Static(status_text, classes="message"))
+            
+        elif cmd == "/model":
+            try:
+                response = requests.get("http://localhost:8000/v1/models", timeout=2.0)
+                if response.status_code == 200:
+                    models = response.json().get("data", [])
+                    if models:
+                        model_info = models[0]
+                        model_id = model_info.get('id', 'unknown')
+                        model_text = f"""[bold cyan]=== Model Info ===[/bold cyan]
+
+  Model:   [bold]{model_id}[/bold]
+  Status:  [green]Loaded[/green]"""
+                        await messages_container.mount(Static(model_text, classes="message"))
+                    else:
+                        await messages_container.mount(Static("[dim]No model info available[/dim]", classes="message"))
+                else:
+                    await messages_container.mount(Static("[dim]Could not fetch model info[/dim]", classes="message"))
+            except requests.exceptions.ConnectionError:
+                await messages_container.mount(Static("[red]Server offline. Cannot get model info.[/red]", classes="message"))
+            except Exception:
+                await messages_container.mount(Static("[dim]Could not connect to server[/dim]", classes="message"))
+        
+        else:
+            await messages_container.mount(Static(f"[dim]Unknown command: {cmd}. Type /help for available commands.[/dim]", classes="message"))
+        
+        messages_container.scroll_end(animate=False)
+
     def _clean_tool_calls(self, text: str) -> str:
         """Remove tool call tags and artifacts from text"""
         import re
@@ -618,13 +902,16 @@ class ChatApp(App):
         text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL)
         # Remove any incomplete tool call tags
         text = re.sub(r'<tool_call>.*$', '', text, flags=re.DOTALL)
-        # Remove [Tool Result] blocks that might be injected
+        # Remove [Tool Result] blocks that might be injected (legacy format)
         text = re.sub(r'\[Tool Result\].*?\n\n', '', text, flags=re.DOTALL)
+        # Remove search result blocks (these are for the model, not user display)
         text = re.sub(r'\[Search Results for:.*?\n\n', '', text, flags=re.DOTALL)
         text = re.sub(r'\[Search Error:.*?\]', '', text)
         text = re.sub(r'\[Searching:.*?\]', '', text)
         text = re.sub(r'\[Current Time:.*?\]', '', text)
         text = re.sub(r'\[No search results.*?\]', '', text)
+        # Remove tool result instruction prefix that we added
+        text = re.sub(r'Here are the tool results\..*?:\n', '', text, flags=re.DOTALL)
         # Remove duplicate thinking artifacts that might appear after tool results
         # (model sometimes repeats its thinking process)
         lines = text.split('\n')

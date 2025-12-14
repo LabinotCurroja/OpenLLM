@@ -371,10 +371,69 @@ def generate_with_tools(
     
     while tool_round < max_tool_rounds:
         # Generate response
+        # Add </tool_call> as stop sequence to prevent model from continuing past tool calls
+        tool_stop = list(stop) if stop else []
+        if "</tool_call>" not in tool_stop:
+            tool_stop.append("</tool_call>")
+        
+        print(f"[DEBUG] Tool round {tool_round}, generating with {len(augmented_messages)} messages")
+        # Show last 2 messages for debugging
+        for i, msg in enumerate(augmented_messages[-2:]):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')[:100]
+            print(f"[DEBUG]   Message[-{2-i}] ({role}): {content}...")
+        
         full_response = ""
-        for token in generate_tokens(augmented_messages, max_tokens, temperature, top_p, top_k, stop):
+        in_tool_call = False
+        pending_yield = ""  # Buffer for tokens that might contain tool call start
+        
+        token_count = 0
+        for token in generate_tokens(augmented_messages, max_tokens, temperature, top_p, top_k, tool_stop):
+            token_count += 1
             full_response += token
-            yield {"type": "token", "content": token}
+            
+            # If already in tool call, just buffer (don't yield)
+            if in_tool_call:
+                continue
+            
+            # Add token to pending buffer
+            pending_yield += token
+            
+            # Check if we've entered a tool call
+            if "<tool_call>" in pending_yield:
+                in_tool_call = True
+                # Only yield content before <tool_call>
+                before_tool = pending_yield.split("<tool_call>")[0]
+                if before_tool:
+                    yield {"type": "token", "content": before_tool}
+                pending_yield = ""
+                continue
+            
+            # Check if we might be in the middle of "<tool_call>" tag
+            # Buffer if the end of pending_yield could be start of <tool_call>
+            potential_tag_starts = ["<", "<t", "<to", "<too", "<tool", "<tool_", "<tool_c", "<tool_ca", "<tool_cal", "<tool_call"]
+            should_buffer = False
+            for partial in potential_tag_starts:
+                if pending_yield.endswith(partial):
+                    should_buffer = True
+                    break
+            
+            if not should_buffer:
+                # Safe to yield the entire pending buffer
+                if pending_yield:
+                    yield {"type": "token", "content": pending_yield}
+                    pending_yield = ""
+        
+        # Yield any remaining content (if no tool call was found)
+        if pending_yield and not in_tool_call:
+            yield {"type": "token", "content": pending_yield}
+        
+        print(f"[DEBUG] Generated {token_count} tokens, response length: {len(full_response)}")
+        print(f"[DEBUG] Response ends with: ...{full_response[-100:] if len(full_response) > 100 else full_response}")
+        
+        # If we stopped on </tool_call>, add it back for proper parsing
+        if "<tool_call>" in full_response and "</tool_call>" not in full_response:
+            full_response += "</tool_call>"
         
         # Check for tool calls
         if has_tool_calls(full_response):
@@ -401,18 +460,26 @@ def generate_with_tools(
                 
                 yield {"type": "tool_result", "name": tool_name, "result": result}
                 
-                # Add tool result to conversation
+                print(f"[DEBUG] Tool {tool_name} returned {len(str(result))} chars")
+                
+                # Add tool result to conversation as a system message for context
+                # This helps the model understand it should continue its response
                 formatted_result = format_tool_result(tool_name, result)
+                print(f"[DEBUG] Formatted result: {len(formatted_result)} chars")
                 augmented_messages.append({
                     "role": "user",
-                    "content": f"[Tool Result]\n{formatted_result}"
+                    "content": f"Here are the tool results. Please use this information to provide a helpful response to my original question:\n{formatted_result}"
                 })
+                print(f"[DEBUG] Added tool result to messages, now have {len(augmented_messages)} messages")
             
             tool_round += 1
+            print(f"[DEBUG] Tool round complete, continuing to round {tool_round}")
         else:
             # No tool calls, we're done
+            print(f"[DEBUG] No tool calls detected, ending generation")
             break
     
+    print(f"[DEBUG] generate_with_tools complete after {tool_round} rounds")
     yield {"type": "done"}
 
 
@@ -523,9 +590,21 @@ def stream_response(
                 yield f"data: {json.dumps(tool_chunk)}\n\n"
             elif event["type"] == "tool_result":
                 # Send tool result as a special marker in content
-                result_text = f"\n[Searching: {event['name']}...]\n"
+                # Include a marker that the TUI recognizes to reset thinking state
+                # Extract query if available from the result
+                query = ""
+                if isinstance(event.get("result"), dict):
+                    query = event["result"].get("query", "")
+                if query:
+                    result_text = f"\n[Searching: {query}]\n"
+                else:
+                    result_text = f"\n[Searching: {event['name']}]\n"
                 chunk = create_chat_completion_chunk(result_text, chunk_id=chunk_id)
                 yield f"data: {json.dumps(chunk)}\n\n"
+                # Also send a thinking restart marker
+                thinking_marker = "<think>"
+                thinking_chunk = create_chat_completion_chunk(thinking_marker, chunk_id=chunk_id)
+                yield f"data: {json.dumps(thinking_chunk)}\n\n"
     else:
         # Standard generation without tools
         for token in generate_tokens(messages, max_tokens, temperature, top_p, stop=stop):
