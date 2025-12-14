@@ -1,48 +1,41 @@
-# Qwen3-4B Inference Requirements
-# Supports both MLX (Apple Silicon) and PyTorch backends
+# Qwen3-4B MLX Requirements (Apple Silicon Only)
+# ===============================================
+# This project runs exclusively on Apple Silicon Macs (M1/M2/M3/M4/M5)
+# using the MLX framework for optimized INT4 inference.
 
 # =============================================================================
-# Core Dependencies (both backends)
+# Core Dependencies
 # =============================================================================
 transformers>=4.40.0
 sentencepiece
 protobuf
 huggingface_hub
 
-# TUI dependencies
+# =============================================================================
+# MLX Framework (Apple Silicon Only)
+# =============================================================================
+# Provides native Apple Silicon support with INT4 quantization
+# ~4x memory reduction and 2-3x speed improvement over PyTorch
+mlx>=0.5.0
+mlx-lm>=0.5.0
+
+# =============================================================================
+# TUI Dependencies
+# =============================================================================
 textual>=0.47.0
 rich>=13.0.0
 psutil
 
-# API server dependencies
+# =============================================================================
+# API Server Dependencies
+# =============================================================================
 flask>=3.0.0
 flask-cors>=4.0.0
 
-# Environment variable management
+# =============================================================================
+# Environment Variable Management
+# =============================================================================
 python-dotenv>=1.0.0
-
-# =============================================================================
-# PyTorch Backend (CUDA, MPS, CPU)
-# =============================================================================
-# Required for non-Apple Silicon or when MLX is not installed
-torch>=2.0.0
-accelerate>=0.27.0
-safetensors
-
-# Optional: For CUDA INT8 quantization (not needed on Mac)
-# bitsandbytes>=0.41.0
-
-# =============================================================================
-# MLX Backend (Apple Silicon ONLY - recommended for M1/M2/M3/M4)
-# =============================================================================
-# Provides INT4 quantization with ~4x memory reduction and 2-3x speed improvement
-# Install these on Apple Silicon Macs:
-#
-# pip install mlx mlx-lm
-#
-# Or uncomment below (will fail on non-Apple Silicon):
-# mlx>=0.5.0
-# mlx-lm>=0.5.0
 
 # =============================================================================
 # Tool Calling Setup (Web Search)
@@ -51,4 +44,3 @@ safetensors
 # 1. Go to https://brave.com/search/api/
 # 2. Sign up for free (2,000 queries/month, no credit card required)
 # 3. Create a .env file with: BRAVE_API_KEY=your-api-key-here
-# =============================================================================

@@ -202,6 +202,13 @@ FUNCTION_CALL_PATTERN = re.compile(
     re.DOTALL
 )
 
+# Raw JSON tool call format (Qwen3 native format)
+# Matches: {"name": "tool_name", "arguments": {...}}
+RAW_JSON_TOOL_PATTERN = re.compile(
+    r'\{\s*"name"\s*:\s*"(web_search|get_current_time)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}',
+    re.DOTALL
+)
+
 
 def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
     """
@@ -211,7 +218,7 @@ def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
     """
     tool_calls = []
     
-    # Try primary pattern
+    # Try primary pattern (<tool_call> tags)
     for match in TOOL_CALL_PATTERN.finditer(text):
         try:
             call_data = json.loads(match.group(1))
@@ -223,7 +230,7 @@ def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     
-    # Try alternative pattern
+    # Try alternative pattern (```tool_call blocks)
     if not tool_calls:
         for match in FUNCTION_CALL_PATTERN.finditer(text):
             try:
@@ -236,18 +243,37 @@ def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
     
+    # Try raw JSON format (Qwen3 native tool calling)
+    if not tool_calls:
+        for match in RAW_JSON_TOOL_PATTERN.finditer(text):
+            try:
+                tool_name = match.group(1)
+                args_str = match.group(2)
+                args = json.loads(args_str)
+                tool_calls.append({
+                    "name": tool_name,
+                    "arguments": args
+                })
+            except json.JSONDecodeError:
+                continue
+    
     return tool_calls
 
 
 def has_tool_calls(text: str) -> bool:
     """Check if text contains any tool calls."""
-    return bool(TOOL_CALL_PATTERN.search(text) or FUNCTION_CALL_PATTERN.search(text))
+    return bool(
+        TOOL_CALL_PATTERN.search(text) or 
+        FUNCTION_CALL_PATTERN.search(text) or
+        RAW_JSON_TOOL_PATTERN.search(text)
+    )
 
 
 def remove_tool_calls(text: str) -> str:
     """Remove tool call tags from text."""
     text = TOOL_CALL_PATTERN.sub("", text)
     text = FUNCTION_CALL_PATTERN.sub("", text)
+    text = RAW_JSON_TOOL_PATTERN.sub("", text)
     return text.strip()
 
 

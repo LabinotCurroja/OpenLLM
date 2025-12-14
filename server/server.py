@@ -1,22 +1,21 @@
 """
-Qwen3-4B OpenAI-Compatible API Server
-======================================
+Qwen3-4B OpenAI-Compatible API Server (Mac Only)
+=================================================
 A simple HTTP server that provides an OpenAI-compatible /v1/chat/completions endpoint.
 Supports streaming via Server-Sent Events (SSE).
 Includes tool calling support with web search.
 
-Backends:
-- MLX (Apple Silicon): Uses INT4 quantization (~2GB memory, 2-3x faster)
-- PyTorch (CUDA/CPU): Uses bfloat16 (~8GB memory)
+Requirements:
+- Apple Silicon Mac (M1/M2/M3/M4/M5)
+- macOS 13.3+
+- MLX framework (pip install mlx mlx-lm)
 """
 
 import json
 import os
-import platform
 import sys
 import time
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Generator
 
@@ -30,12 +29,12 @@ if str(_inference_dir) not in sys.path:
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
 
+from backend import check_system_requirements, print_system_info
 from tools import (
     AVAILABLE_TOOLS,
     get_tools_system_prompt,
     parse_tool_calls,
     has_tool_calls,
-    remove_tool_calls,
     execute_tool,
     format_tool_result,
 )
@@ -52,272 +51,65 @@ DEFAULT_TOP_K = 20
 ENABLE_TOOLS = True  # Enable tool calling by default
 
 # ============================================================================
-# Backend Detection
-# ============================================================================
-
-def is_apple_silicon() -> bool:
-    """Check if running on Apple Silicon Mac."""
-    return (
-        platform.system() == "Darwin" and 
-        platform.machine() == "arm64"
-    )
-
-def should_use_mlx() -> bool:
-    """Determine if we should use MLX backend."""
-    # Check for environment variable override
-    force_backend = os.environ.get("OPENLLM_BACKEND", "").lower()
-    if force_backend == "pytorch":
-        return False
-    if force_backend == "mlx":
-        return True
-    
-    # Auto-detect: use MLX on Apple Silicon if available
-    if is_apple_silicon():
-        try:
-            import mlx.core
-            import mlx_lm
-            return True
-        except ImportError:
-            print("⚠️  MLX not installed. Using PyTorch backend.")
-            print("   For better performance on Mac, install: pip install mlx mlx-lm")
-            return False
-    return False
-
-USE_MLX = should_use_mlx()
-
-# ============================================================================
-# Model Loading
+# System Requirements Check
 # ============================================================================
 
 print("=" * 60)
-print("🚀 Qwen3-4B API Server")
+print("🚀 Qwen3-4B API Server (Apple Silicon)")
 print("=" * 60)
 print()
 
-if USE_MLX:
-    # MLX Backend (Apple Silicon)
-    from qwen3_mlx import Qwen3MLX, generate_tokens_mlx
-    
-    def load_model():
-        """Load the MLX model."""
-        print("🍎 Using MLX backend (Apple Silicon)")
-        print("📊 INT4 quantization (~2GB memory)")
-        print()
-        
-        model = Qwen3MLX.from_pretrained(use_thinking=True)
-        
-        print()
-        print("✅ Model loaded successfully!")
-        print()
-        
-        return model
-    
-    MODEL = load_model()
-    TOKENIZER = MODEL.tokenizer
-    DEVICE = "mlx"
-    
-    def generate_tokens(
-        messages: List[Dict[str, str]],
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        temperature: float = DEFAULT_TEMPERATURE,
-        top_p: float = DEFAULT_TOP_P,
-        top_k: int = DEFAULT_TOP_K,
-        stop: Optional[List[str]] = None,
-    ) -> Generator[str, None, None]:
-        """Generator that yields tokens one by one for streaming (MLX)."""
-        yield from generate_tokens_mlx(
-            MODEL,
-            messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stop=stop,
-        )
+# Check system requirements before loading model
+success, message = check_system_requirements()
+if not success:
+    print(message)
+    sys.exit(1)
 
-else:
-    # PyTorch Backend (CUDA/MPS/CPU)
-    import torch
-    import torch.nn.functional as F
-    from qwen3_pytorch import (
-        Qwen3Config,
-        Qwen3ForCausalLM,
-        KVCache,
-        download_model,
-        load_weights,
+print(message)
+print()
+
+# ============================================================================
+# Model Loading (MLX Only)
+# ============================================================================
+
+from qwen3_mlx import Qwen3MLX, generate_tokens_mlx
+
+def load_model():
+    """Load the MLX model."""
+    print("🍎 Using MLX backend (Apple Silicon)")
+    print("📊 INT4 quantization (~2GB memory)")
+    print()
+    
+    model = Qwen3MLX.from_pretrained(use_thinking=True)
+    
+    print()
+    print("✅ Model loaded successfully!")
+    print()
+    
+    return model
+
+MODEL = load_model()
+TOKENIZER = MODEL.tokenizer
+DEVICE = "mlx"
+
+
+def generate_tokens(
+    messages: List[Dict[str, str]],
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float = DEFAULT_TOP_P,
+    top_k: int = DEFAULT_TOP_K,
+    stop: Optional[List[str]] = None,
+) -> Generator[str, None, None]:
+    """Generator that yields tokens one by one for streaming (MLX)."""
+    yield from generate_tokens_mlx(
+        MODEL,
+        messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        stop=stop,
     )
-    from transformers import AutoTokenizer
-    
-    def load_model():
-        """Load the PyTorch model."""
-        # Device setup
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-        elif torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-        
-        print(f"🔥 Using PyTorch backend")
-        print(f"📱 Device: {device}")
-        dtype = torch.bfloat16
-        print(f"📊 Using dtype: {dtype} (~8GB memory)")
-        print()
-        
-        # Download model
-        print("⬇️  Downloading model (if needed)...")
-        model_path = download_model("Qwen/Qwen3-4B-Thinking-2507")
-        
-        # Load config
-        print("⚙️  Loading configuration...")
-        config = Qwen3Config.from_pretrained(model_path)
-        
-        # Create model
-        print("🏗️  Creating model architecture...")
-        model = Qwen3ForCausalLM(config)
-        
-        # Load weights
-        print("💾 Loading weights (~8GB)...")
-        model = load_weights(model, model_path, device, dtype)
-        model.eval()
-        
-        # Load tokenizer
-        print("📝 Loading tokenizer...")
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        
-        print()
-        print("✅ Model loaded successfully!")
-        print()
-        
-        return model, tokenizer, device
-
-    MODEL, TOKENIZER, DEVICE = load_model()
-    
-    def generate_tokens(
-        messages: List[Dict[str, str]],
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        temperature: float = DEFAULT_TEMPERATURE,
-        top_p: float = DEFAULT_TOP_P,
-        top_k: int = DEFAULT_TOP_K,
-        stop: Optional[List[str]] = None,
-    ) -> Generator[str, None, None]:
-        """Generator that yields tokens one by one for streaming (PyTorch)."""
-        model = MODEL
-        tokenizer = TOKENIZER
-        device = DEVICE
-        config = model.config
-        dtype = next(model.parameters()).dtype
-        
-        # Use an incremental decoder to properly handle multi-byte UTF-8 characters
-        # that may be split across multiple tokens
-        token_buffer = []
-        
-        with torch.inference_mode():
-            # Format as chat using the tokenizer's chat template
-            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            
-            # Tokenize
-            input_ids = tokenizer.encode(text, return_tensors="pt").to(device)
-            prompt_len = input_ids.shape[1]
-            
-            # Pre-allocate KV cache for the entire generation
-            total_len = prompt_len + max_tokens
-            kv_cache = KVCache(
-                batch_size=1,
-                max_seq_len=total_len,
-                num_kv_heads=config.num_key_value_heads,
-                head_dim=config.head_dim,
-                num_layers=config.num_hidden_layers,
-                device=device,
-                dtype=dtype,
-            )
-            
-            # Prefill: process the entire prompt
-            position_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
-            logits = model(input_ids, position_ids=position_ids, kv_cache=kv_cache)
-            kv_cache.advance(prompt_len)
-            
-            # Get next token from last position
-            next_token_logits = logits[:, -1, :]
-            
-            current_pos = prompt_len
-            generated_text = ""
-            
-            for _ in range(max_tokens):
-                # Apply temperature
-                if temperature > 0:
-                    next_token_logits = next_token_logits / temperature
-                
-                # Apply top-k
-                if top_k > 0:
-                    indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
-                    next_token_logits[indices_to_remove] = float("-inf")
-                
-                # Apply top-p (nucleus sampling)
-                if top_p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
-                    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                    sorted_indices_to_remove[..., 0] = 0
-                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                    next_token_logits[indices_to_remove] = float("-inf")
-                
-                # Sample
-                probs = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-                token_id = next_token.item()
-                
-                # Check for EOS
-                if token_id == tokenizer.eos_token_id:
-                    # Flush any remaining tokens in buffer before ending
-                    if token_buffer:
-                        final_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
-                        if final_text:
-                            generated_text += final_text
-                            yield final_text
-                    break
-                
-                # Add token to buffer and decode incrementally
-                # This handles multi-byte UTF-8 characters that span multiple tokens
-                token_buffer.append(token_id)
-                
-                # Try to decode the buffer - if it produces valid text, yield it
-                # Keep a sliding window to handle incomplete sequences
-                decoded_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
-                
-                # Check if the decoded text ends with a replacement character (incomplete UTF-8)
-                # If so, buffer more tokens before yielding
-                if decoded_text and not decoded_text.endswith('\ufffd') and not decoded_text.endswith('�'):
-                    # Successfully decoded - yield and clear buffer
-                    generated_text += decoded_text
-                    yield decoded_text
-                    token_buffer = []
-                    
-                    # Check for stop sequences
-                    if stop:
-                        for stop_seq in stop:
-                            if stop_seq in generated_text:
-                                return
-                elif len(token_buffer) > 10:
-                    # Safety limit - if buffer gets too large, force decode and yield
-                    # This prevents infinite buffering
-                    generated_text += decoded_text
-                    yield decoded_text
-                    token_buffer = []
-                
-                # Decode step: only process the new token with KV cache
-                position_ids = torch.tensor([[current_pos]], device=device)
-                logits = model(next_token, position_ids=position_ids, kv_cache=kv_cache)
-                kv_cache.advance(1)
-                next_token_logits = logits[:, -1, :]
-                current_pos += 1
-            
-            # Flush any remaining tokens in buffer after loop ends (max_tokens reached)
-            if token_buffer:
-                final_text = tokenizer.decode(token_buffer, skip_special_tokens=True)
-                if final_text:
-                    yield final_text
 
 
 def generate_full(
@@ -351,6 +143,8 @@ def generate_with_tools(
     - {"type": "tool_result", "name": str, "result": dict} - Tool result
     - {"type": "done"} - Generation complete
     """
+    import re
+    
     # Inject tools system prompt into the first system message or prepend it
     augmented_messages = list(messages)
     tools_prompt = get_tools_system_prompt()
@@ -371,115 +165,101 @@ def generate_with_tools(
     
     while tool_round < max_tool_rounds:
         # Generate response
-        # Add </tool_call> as stop sequence to prevent model from continuing past tool calls
         tool_stop = list(stop) if stop else []
         if "</tool_call>" not in tool_stop:
             tool_stop.append("</tool_call>")
         
-        print(f"[DEBUG] Tool round {tool_round}, generating with {len(augmented_messages)} messages")
-        # Show last 2 messages for debugging
-        for i, msg in enumerate(augmented_messages[-2:]):
-            role = msg.get('role', 'unknown')
-            content = msg.get('content', '')[:100]
-            print(f"[DEBUG]   Message[-{2-i}] ({role}): {content}...")
-        
         full_response = ""
         in_tool_call = False
-        pending_yield = ""  # Buffer for tokens that might contain tool call start
+        in_json_tool_call = False
+        pending_yield = ""
+        json_brace_depth = 0
         
-        token_count = 0
         for token in generate_tokens(augmented_messages, max_tokens, temperature, top_p, top_k, tool_stop):
-            token_count += 1
             full_response += token
             
-            # If already in tool call, just buffer (don't yield)
-            if in_tool_call:
+            if in_tool_call or in_json_tool_call:
+                if in_json_tool_call:
+                    for c in token:
+                        if c == '{':
+                            json_brace_depth += 1
+                        elif c == '}':
+                            json_brace_depth -= 1
+                            if json_brace_depth == 0:
+                                break
                 continue
             
-            # Add token to pending buffer
             pending_yield += token
             
-            # Check if we've entered a tool call
             if "<tool_call>" in pending_yield:
                 in_tool_call = True
-                # Only yield content before <tool_call>
                 before_tool = pending_yield.split("<tool_call>")[0]
                 if before_tool:
                     yield {"type": "token", "content": before_tool}
                 pending_yield = ""
                 continue
             
-            # Check if we might be in the middle of "<tool_call>" tag
-            # Buffer if the end of pending_yield could be start of <tool_call>
+            json_tool_match = re.search(r'\{"name"\s*:\s*"(web_search|get_current_time)"', pending_yield)
+            if json_tool_match:
+                in_json_tool_call = True
+                json_brace_depth = 1
+                before_json = pending_yield[:json_tool_match.start()]
+                if before_json:
+                    yield {"type": "token", "content": before_json}
+                pending_yield = ""
+                continue
+            
             potential_tag_starts = ["<", "<t", "<to", "<too", "<tool", "<tool_", "<tool_c", "<tool_ca", "<tool_cal", "<tool_call"]
+            potential_json_starts = ["{", '{"', '{"n', '{"na', '{"nam', '{"name', '{"name"', '{"name":']
+            
             should_buffer = False
-            for partial in potential_tag_starts:
+            for partial in potential_tag_starts + potential_json_starts:
                 if pending_yield.endswith(partial):
                     should_buffer = True
                     break
             
             if not should_buffer:
-                # Safe to yield the entire pending buffer
                 if pending_yield:
                     yield {"type": "token", "content": pending_yield}
                     pending_yield = ""
         
-        # Yield any remaining content (if no tool call was found)
-        if pending_yield and not in_tool_call:
+        if pending_yield and not in_tool_call and not in_json_tool_call:
             yield {"type": "token", "content": pending_yield}
         
-        print(f"[DEBUG] Generated {token_count} tokens, response length: {len(full_response)}")
-        print(f"[DEBUG] Response ends with: ...{full_response[-100:] if len(full_response) > 100 else full_response}")
-        
-        # If we stopped on </tool_call>, add it back for proper parsing
         if "<tool_call>" in full_response and "</tool_call>" not in full_response:
             full_response += "</tool_call>"
         
-        # Check for tool calls
         if has_tool_calls(full_response):
             tool_calls = parse_tool_calls(full_response)
             
             if not tool_calls:
                 break
             
-            # Add assistant's message with tool call to conversation
             augmented_messages.append({
                 "role": "assistant",
                 "content": full_response
             })
             
-            # Execute each tool and add results
             for call in tool_calls:
                 tool_name = call["name"]
                 tool_args = call["arguments"]
                 
                 yield {"type": "tool_call", "name": tool_name, "arguments": tool_args}
                 
-                # Execute the tool
                 result = execute_tool(tool_name, tool_args)
                 
                 yield {"type": "tool_result", "name": tool_name, "result": result}
                 
-                print(f"[DEBUG] Tool {tool_name} returned {len(str(result))} chars")
-                
-                # Add tool result to conversation as a system message for context
-                # This helps the model understand it should continue its response
                 formatted_result = format_tool_result(tool_name, result)
-                print(f"[DEBUG] Formatted result: {len(formatted_result)} chars")
                 augmented_messages.append({
                     "role": "user",
                     "content": f"Here are the tool results. Please use this information to provide a helpful response to my original question:\n{formatted_result}"
                 })
-                print(f"[DEBUG] Added tool result to messages, now have {len(augmented_messages)} messages")
             
             tool_round += 1
-            print(f"[DEBUG] Tool round complete, continuing to round {tool_round}")
         else:
-            # No tool calls, we're done
-            print(f"[DEBUG] No tool calls detected, ending generation")
             break
     
-    print(f"[DEBUG] generate_with_tools complete after {tool_round} rounds")
     yield {"type": "done"}
 
 
@@ -513,9 +293,9 @@ def create_chat_completion_response(
             }
         ],
         "usage": {
-            "prompt_tokens": -1,  # Not tracked
-            "completion_tokens": -1,  # Not tracked
-            "total_tokens": -1,  # Not tracked
+            "prompt_tokens": -1,
+            "completion_tokens": -1,
+            "total_tokens": -1,
         },
     }
 
@@ -557,18 +337,15 @@ def stream_response(
     """Stream SSE response."""
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     
-    # Send initial chunk with role
     initial_chunk = create_chat_completion_chunk("", chunk_id=chunk_id)
     yield f"data: {json.dumps(initial_chunk)}\n\n"
     
     if use_tools and ENABLE_TOOLS:
-        # Use tool-enabled generation
         for event in generate_with_tools(messages, max_tokens, temperature, top_p, stop=stop):
             if event["type"] == "token":
                 chunk = create_chat_completion_chunk(event["content"], chunk_id=chunk_id)
                 yield f"data: {json.dumps(chunk)}\n\n"
             elif event["type"] == "tool_call":
-                # Send a special chunk to notify client about tool call
                 tool_chunk = {
                     "id": chunk_id,
                     "object": "chat.completion.chunk",
@@ -589,9 +366,6 @@ def stream_response(
                 }
                 yield f"data: {json.dumps(tool_chunk)}\n\n"
             elif event["type"] == "tool_result":
-                # Send tool result as a special marker in content
-                # Include a marker that the TUI recognizes to reset thinking state
-                # Extract query if available from the result
                 query = ""
                 if isinstance(event.get("result"), dict):
                     query = event["result"].get("query", "")
@@ -601,17 +375,14 @@ def stream_response(
                     result_text = f"\n[Searching: {event['name']}]\n"
                 chunk = create_chat_completion_chunk(result_text, chunk_id=chunk_id)
                 yield f"data: {json.dumps(chunk)}\n\n"
-                # Also send a thinking restart marker
                 thinking_marker = "<think>"
                 thinking_chunk = create_chat_completion_chunk(thinking_marker, chunk_id=chunk_id)
                 yield f"data: {json.dumps(thinking_chunk)}\n\n"
     else:
-        # Standard generation without tools
         for token in generate_tokens(messages, max_tokens, temperature, top_p, stop=stop):
             chunk = create_chat_completion_chunk(token, chunk_id=chunk_id)
             yield f"data: {json.dumps(chunk)}\n\n"
     
-    # Send final chunk
     final_chunk = create_chat_completion_chunk("", finish_reason="stop", chunk_id=chunk_id)
     yield f"data: {json.dumps(final_chunk)}\n\n"
     yield "data: [DONE]\n\n"
@@ -623,7 +394,6 @@ def chat_completions():
     try:
         data = request.json
         
-        # Extract parameters
         messages = data.get("messages", [])
         stream = data.get("stream", False)
         max_tokens = data.get("max_tokens", DEFAULT_MAX_TOKENS)
@@ -631,11 +401,8 @@ def chat_completions():
         top_p = data.get("top_p", DEFAULT_TOP_P)
         stop = data.get("stop")
         
-        # Tool calling support
-        tools = data.get("tools")  # OpenAI format
-        use_tools = data.get("use_tools", False)  # Simple boolean flag
-        
-        # Enable tools if either tools array is provided or use_tools is True
+        tools = data.get("tools")
+        use_tools = data.get("use_tools", False)
         enable_tools = bool(tools) or use_tools
         
         if isinstance(stop, str):
@@ -645,7 +412,6 @@ def chat_completions():
             return jsonify({"error": "messages is required"}), 400
         
         if stream:
-            # Streaming response
             return Response(
                 stream_response(messages, max_tokens, temperature, top_p, stop, use_tools=enable_tools),
                 mimetype="text/event-stream",
@@ -656,9 +422,7 @@ def chat_completions():
                 },
             )
         else:
-            # Non-streaming response
             if enable_tools:
-                # Collect all tokens from tool-enabled generation
                 full_content = ""
                 for event in generate_with_tools(messages, max_tokens, temperature, top_p, stop=stop):
                     if event["type"] == "token":
@@ -698,7 +462,6 @@ def health():
 @app.route("/v1/tools", methods=["GET"])
 def list_tools():
     """List available tools."""
-    import os
     brave_configured = bool(os.environ.get("BRAVE_API_KEY", ""))
     return jsonify({
         "tools": AVAILABLE_TOOLS,
@@ -714,7 +477,6 @@ def list_tools():
 def ping():
     """Ping endpoint to check if server is ready."""
     try:
-        # Check if model is loaded and ready
         if MODEL is not None and TOKENIZER is not None:
             return jsonify({"status": "success", "message": "Server is ready"})
         else:
@@ -727,10 +489,12 @@ def ping():
 def index():
     """Index page."""
     return jsonify({
-        "message": "Qwen3-4B API Server",
+        "message": "Qwen3-4B API Server (Apple Silicon)",
+        "backend": "MLX (INT4 quantized)",
         "endpoints": {
             "/v1/chat/completions": "OpenAI-compatible chat completions",
             "/v1/models": "List available models",
+            "/v1/tools": "List available tools",
             "/health": "Health check",
             "/ping": "Check if server is ready",
         },
@@ -744,7 +508,7 @@ def index():
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Qwen3-4B API Server")
+    parser = argparse.ArgumentParser(description="Qwen3-4B API Server (Apple Silicon)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")

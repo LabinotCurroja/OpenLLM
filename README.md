@@ -1,30 +1,30 @@
-# OpenLLM - Open AI Usage for Everyone
+# OpenLLM - Local AI for Apple Silicon
 
 <p align="center">
   <img src="assets/dragon.png" width="200" alt="OpenLLM">
 </p>
 
-Run large language models locally with full privacy. Your data never leaves your machine - no API calls, no cloud dependencies, just you and your hardware.
+Run **Qwen3-4B** locally on your Mac with full privacy. Your data never leaves your machine - no API calls, no cloud dependencies, just you and your hardware.
 
-Currently supports **Qwen3-4B**, optimized for Apple Silicon Macs but also works on CUDA GPUs and CPU.
+This project uses **MLX** with **INT4 quantization** for efficient inference on Apple Silicon, requiring only ~2GB of memory.
 
 ## Features
 
-- **Pure PyTorch** - No llama.cpp, vLLM, or other inference frameworks required
-- **Apple Silicon Optimized** - First-class MPS (Metal Performance Shaders) support
+- **Apple Silicon Native** - Built with MLX for optimal M1/M2/M3/M4/M5 performance
+- **INT4 Quantization** - 4-bit quantization reduces memory from ~8GB to ~2GB
 - **OpenAI-Compatible API** - Drop-in replacement for OpenAI API clients
 - **Tool Calling** - Web search support via Brave Search API (free tier)
 - **Streaming Support** - Real-time token streaming via Server-Sent Events
 - **Beautiful TUI** - Terminal user interface for interactive chat
-- **Optimized Inference** - Pre-allocated KV cache, torch.compile, and more
+
+## Requirements
+
+- **Apple Silicon Mac** (M1/M2/M3/M4/M5) - Intel Macs are not supported
+- **macOS 13.3+** (Ventura or later)
+- **8GB+ RAM** (16GB+ recommended)
+- **Python 3.9+**
 
 ## Quick Start
-
-### Prerequisites
-
-- Python 3.9+
-- ~10GB RAM (8GB for model + overhead)
-- macOS with Apple Silicon (M1/M2/M3/M4/M5) OR NVIDIA GPU with CUDA
 
 ### Installation
 
@@ -45,10 +45,10 @@ This launches an interactive terminal interface for chatting with the model.
 ### Run the API Server
 
 ```bash
-python server.py
+python server/server.py
 ```
 
-This starts an OpenAI-compatible API server on `http://localhost:5001`.
+This starts an OpenAI-compatible API server on `http://localhost:8000`.
 
 ## Tool Calling (Web Search)
 
@@ -67,25 +67,8 @@ The model supports tool calling with web search capabilities. When enabled, the 
 
 3. Start the server - tool calling is enabled automatically:
    ```bash
-   python server.py
+   python server/server.py
    ```
-
-### Using Tool Calling
-
-The model will automatically search when it needs current information:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:5001/v1", api_key="not-needed")
-
-# Ask something that needs current info
-response = client.chat.completions.create(
-    model="qwen3-4b",
-    messages=[{"role": "user", "content": "What are the latest developments in AI?"}],
-    extra_body={"use_tools": True}  # Enable tool calling
-)
-```
 
 ### Available Tools
 
@@ -94,17 +77,11 @@ response = client.chat.completions.create(
 | `web_search` | Search the web for current information |
 | `get_current_time` | Get the current date and time |
 
-### Check Tool Status
-
-```bash
-curl http://localhost:5001/v1/tools
-```
-
 ## API Usage
 
 ```bash
 # Chat completion (streaming)
-curl http://localhost:5001/v1/chat/completions \
+curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-4b",
@@ -113,7 +90,7 @@ curl http://localhost:5001/v1/chat/completions \
   }'
 
 # Chat completion with tool calling
-curl http://localhost:5001/v1/chat/completions \
+curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen3-4b",
@@ -121,25 +98,15 @@ curl http://localhost:5001/v1/chat/completions \
     "stream": true,
     "use_tools": true
   }'
-
-# Chat completion (non-streaming)
-curl http://localhost:5001/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen3-4b",
-    "messages": [{"role": "user", "content": "Explain quantum computing"}],
-    "max_tokens": 500,
-    "temperature": 0.7
-  }'
 ```
 
-#### Using with OpenAI Python SDK
+### Using with OpenAI Python SDK
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:5001/v1",
+    base_url="http://localhost:8000/v1",
     api_key="not-needed"
 )
 
@@ -154,75 +121,63 @@ for chunk in response:
         print(chunk.choices[0].delta.content, end="")
 ```
 
-### Run Direct Inference
-
-```bash
-python qwen3_pytorch.py
-```
-
-This runs the model directly with an interactive prompt.
-
 ## Memory Usage
 
 | Configuration | Memory | Notes |
 |--------------|--------|-------|
-| MLX INT4 (recommended on Mac) | ~2GB | Apple Silicon only, fastest |
-| bfloat16 (default) | ~8GB | Recommended for M1 Pro+ |
-| float16 | ~8GB | Slightly faster on some hardware |
-| float32 | ~16GB | Won't fit on most Macs |
+| INT4 (default) | ~2GB | MLX with 4-bit quantization |
 
-The KV cache adds additional memory during generation:
-- ~50MB per 1000 tokens of context
-- Pre-allocated for `max_new_tokens` (default 2048)
+The model uses pre-quantized INT4 weights from the MLX Community:
+- `mlx-community/Qwen3-4B-4bit` - Base model
+- `mlx-community/Qwen3-4B-Thinking-2507-4bit` - Thinking variant (default)
 
-## MLX Backend (Apple Silicon)
+## How It Works
 
-For Apple Silicon Macs (M1/M2/M3/M4), we provide an MLX backend with INT4 quantization that offers significant improvements:
+MLX is Apple's framework for machine learning on Apple Silicon. It provides:
 
-### Benefits
+- **Native Metal support** - Direct GPU acceleration without adapters
+- **Unified memory** - Efficient data sharing between CPU and GPU
+- **INT4 quantization** - 4-bit integer weights for 4x memory reduction
 
-| Aspect | PyTorch (bfloat16) | MLX (INT4) |
-|--------|-------------------|------------|
-| **Memory** | ~8GB | ~2GB |
-| **Speed** | Good (via MPS) | 2-3x faster |
-| **Native** | Via Metal adapter | Native Apple Silicon |
+The model runs entirely on your Mac's GPU via Metal, providing fast inference with minimal memory footprint.
 
-### Installation
+## Project Structure
 
+```
+OpenLLM/
+├── tui.py             # Terminal UI (run this)
+├── requirements.txt   # Python dependencies
+├── server/
+│   ├── server.py      # API server (run this)
+│   ├── backend.py     # MLX backend with system checks
+│   └── tools.py       # Tool calling (web search)
+└── inference/
+    └── qwen3_mlx.py   # MLX inference implementation
+```
+
+## Troubleshooting
+
+### "This application requires Apple Silicon"
+
+This project only works on Apple Silicon Macs (M1/M2/M3/M4/M5). Intel Macs are not supported because MLX requires Apple Silicon.
+
+### "MLX is not installed"
+
+Install MLX with:
 ```bash
-# Install MLX dependencies (Apple Silicon only)
 pip install mlx mlx-lm
 ```
 
-### Usage
+### "Insufficient memory"
 
-The backend is auto-selected based on your platform. On Apple Silicon with MLX installed, it will automatically use the MLX backend.
-
-```bash
-# Auto-select best backend
-python server.py
-
-# Force a specific backend
-OPENLLM_BACKEND=mlx python server.py
-OPENLLM_BACKEND=pytorch python server.py
-
-# Run MLX directly
-python qwen3_mlx.py
-```
-
-### How It Works
-
-MLX uses pre-quantized INT4 models from the MLX Community:
-- `mlx-community/Qwen3-4B-4bit` - Base model (~2GB)
-- `mlx-community/Qwen3-4B-Thinking-2507-4bit` - Thinking variant
-
-The quantization is done at the weight level using 4-bit integers, reducing memory by 4x while maintaining quality through careful calibration.
+The model requires at least 8GB of RAM. Close other applications to free up memory. 16GB+ is recommended for best performance.
 
 ## Acknowledgments
 
 - [Qwen Team](https://github.com/QwenLM/Qwen) for the Qwen3 model
-- [Hugging Face](https://huggingface.co/) for model hosting and tokenizers
-- [PyTorch](https://pytorch.org/) for the amazing framework
+- [MLX Community](https://huggingface.co/mlx-community) for quantized models
+- [Apple MLX](https://github.com/ml-explore/mlx) for the ML framework
+- [Hugging Face](https://huggingface.co/) for model hosting
 
 ## License
 
@@ -230,4 +185,4 @@ MIT License - feel free to use, modify, and distribute.
 
 ---
 
-**Why OpenLLM?** This implementation gives you **full control** over your LLM inference with ~80% of the efficiency of state-of-the-art frameworks like vLLM or TensorRT-LLM. It's production-ready for many use cases: local development, privacy-sensitive applications, edge deployment, and anywhere you need to **keep your data on your own hardware**. No API calls, no data leaving your machine, no vendor lock-in.
+**Why OpenLLM?** Run AI locally with complete privacy. No API calls, no data leaving your machine, no vendor lock-in. Just pure local inference on Apple Silicon.

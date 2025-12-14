@@ -1,6 +1,7 @@
 import psutil
 import os
 import json
+import re
 import requests
 import subprocess
 import platform
@@ -8,16 +9,10 @@ import time
 import asyncio
 from typing import Optional
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll, Container, Horizontal
-from textual.widgets import Input, Static, Label, Markdown, LoadingIndicator, OptionList
+from textual.containers import VerticalScroll, Container, Horizontal, Vertical
+from textual.widgets import Input, Static, Label, Markdown, LoadingIndicator, OptionList, Collapsible
 from textual.widgets.option_list import Option
 from textual.reactive import reactive
-
-try:
-    import torch
-    HAS_TORCH = torch.backends.mps.is_available() or torch.cuda.is_available()
-except ImportError:
-    HAS_TORCH = False
 
 
 def get_memory_usage() -> str:
@@ -29,44 +24,23 @@ def get_memory_usage() -> str:
 def get_gpu_usage() -> str:
     """Get GPU/unified memory usage on Apple Silicon via ioreg"""
     try:
-        if platform.system() == "Darwin":  # macOS with Apple Silicon
-            # Use ioreg to get actual GPU memory from AGXAccelerator
-            result = subprocess.run(
-                ["ioreg", "-r", "-c", "AGXAccelerator"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode == 0:
-                import re
-                # Look for "In use system memory"=NNNNNN in the output
-                match = re.search(r'"In use system memory"=(\d+)', result.stdout)
-                if match:
-                    mem_bytes = int(match.group(1))
-                    mem_gb = mem_bytes / 1024 / 1024 / 1024
-                    if mem_gb >= 1:
-                        return f"{mem_gb:.1f}GB"
-                    else:
-                        return f"{mem_bytes / 1024 / 1024:.0f}MB"
-            return "N/A"
-        
-        elif HAS_TORCH and torch.cuda.is_available():
-            # NVIDIA GPU - use nvidia-smi for accurate GPU utilization
-            try:
-                result = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2
-                )
-                gpu_util = result.stdout.strip().split("\n")[0]
-                return f"{gpu_util}%"
-            except Exception:
-                # Fallback to memory-based reporting
-                total = torch.cuda.get_device_properties(0).total_memory
-                used = torch.cuda.memory_allocated()
-                percent = (used / total) * 100
-                return f"{percent:.0f}%"
+        # Use ioreg to get actual GPU memory from AGXAccelerator
+        result = subprocess.run(
+            ["ioreg", "-r", "-c", "AGXAccelerator"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0:
+            # Look for "In use system memory"=NNNNNN in the output
+            match = re.search(r'"In use system memory"=(\d+)', result.stdout)
+            if match:
+                mem_bytes = int(match.group(1))
+                mem_gb = mem_bytes / 1024 / 1024 / 1024
+                if mem_gb >= 1:
+                    return f"{mem_gb:.1f}GB"
+                else:
+                    return f"{mem_bytes / 1024 / 1024:.0f}MB"
     except Exception:
         pass
     
@@ -145,7 +119,7 @@ class TopBar(Horizontal):
         if self.server_ready:
             status = "[green]●[/green] Ready"
             if self.tools_ready:
-                status += " [dim]│[/dim] [blue]🔍[/blue]"
+                status += " [dim]│[/dim] [#5cd47a]🔍[/#5cd47a]"
         else:
             status = "[red]●[/red] Offline"
         
@@ -159,22 +133,47 @@ class TopBar(Horizontal):
 
 
 
+class HistoryUserMessage(Static):
+    """A user chat message with subtle styling"""
+    def __init__(self, text: str):
+        super().__init__(text, classes="message user-history")
+
+
 class UserMessage(Static):
-    """A user chat message with background"""
+    """A user chat message with background (in scroll history)"""
     def __init__(self, text: str):
         super().__init__(text, classes="message user")
 
 
-class ThinkingMessage(Horizontal):
-    """A thinking message with spinner and small text"""
+class ThinkingMessage(Vertical):
+    """A thinking message with spinner and collapsible text"""
     def __init__(self):
         super().__init__(classes="thinking-container")
         self._thinking_text = ""
         self._is_done = False
     
     def compose(self) -> ComposeResult:
-        yield LoadingIndicator(id="thinking-spinner")
-        yield Static("", id="thinking-text", classes="thinking-text")
+        with Horizontal(classes="thinking-header", id="thinking-header"):
+            yield LoadingIndicator(id="thinking-spinner")
+            yield Static("Thinking...", id="thinking-label")
+            yield Static("▶", id="thinking-toggle", classes="thinking-toggle")
+        yield Collapsible(
+            Static("", id="thinking-text", classes="thinking-text"),
+            title="",
+            collapsed=True,
+            id="thinking-collapsible"
+        )
+    
+    def on_click(self, event) -> None:
+        """Toggle collapsible when clicked"""
+        try:
+            collapsible = self.query_one("#thinking-collapsible", Collapsible)
+            collapsible.collapsed = not collapsible.collapsed
+            # Update toggle indicator
+            toggle = self.query_one("#thinking-toggle", Static)
+            toggle.update("▶" if collapsible.collapsed else "▼")
+        except Exception:
+            pass
     
     def update_thinking(self, text: str) -> None:
         """Update the thinking text"""
@@ -185,11 +184,21 @@ class ThinkingMessage(Horizontal):
             pass
     
     def finish_thinking(self) -> None:
-        """Stop the spinner and mark thinking as complete"""
+        """Stop the spinner, collapse the thinking, and mark as complete"""
         self._is_done = True
         try:
+            # Remove the spinner
             spinner = self.query_one("#thinking-spinner", LoadingIndicator)
             spinner.remove()
+            # Update the label
+            label = self.query_one("#thinking-label", Static)
+            label.update("[dim]Thought[/dim]")
+            # Show toggle indicator (collapsed)
+            toggle = self.query_one("#thinking-toggle", Static)
+            toggle.update("▶")
+            # Collapse the thinking content
+            collapsible = self.query_one("#thinking-collapsible", Collapsible)
+            collapsible.collapsed = True
         except Exception:
             pass
 
@@ -199,20 +208,20 @@ class ToolMessage(Static):
     def __init__(self, tool_name: str, query: str = "", status: str = "calling"):
         if tool_name == "web_search":
             if status == "calling":
-                text = f"[blue]🔍 Searching:[/blue] {query}" if query else "[blue]🔍 Searching...[/blue]"
+                text = f"[dim][tool call][/dim] [#5cd47a]web_search[/#5cd47a]  {query}" if query else "[dim][tool call][/dim] [#5cd47a]web_search[/#5cd47a]"
             elif status == "done":
-                text = f"[dim]🔍 Searched: {query}[/dim]"
+                text = f"[dim][tool call] web_search  {query}[/dim]"
             else:
-                text = f"[blue]🔍[/blue] {status}"
+                text = f"[dim][tool call][/dim] [#5cd47a]{status}[/#5cd47a]"
         elif tool_name == "get_current_time":
-            text = "[blue]🕐 Getting current time...[/blue]"
+            text = "[dim][tool call][/dim] [#5cd47a]get_current_time[/#5cd47a]"
         else:
-            text = f"[blue]🔧 {tool_name}[/blue]: {status}"
+            text = f"[dim][tool call][/dim] [#5cd47a]{tool_name}[/#5cd47a]"
         super().__init__(text, classes="tool-message")
     
     def mark_done(self, query: str = "") -> None:
         """Mark the tool call as complete"""
-        self.update(f"[dim]🔍 Searched: {query}[/dim]")
+        self.update(f"[dim][tool call] web_search  {query}[/dim]")
 
 
 class BotMessage(Markdown):
@@ -225,6 +234,17 @@ class BotMessage(Markdown):
         current = self._markdown if hasattr(self, '_markdown') else ""
         self._markdown = current + text
         self.update(self._markdown)
+
+
+class BotResponse(Horizontal):
+    """A bot response with └── prefix for visual consistency"""
+    def __init__(self, text: str = ""):
+        super().__init__(classes="bot-response")
+        self._text = text
+    
+    def compose(self) -> ComposeResult:
+        yield Static("└── ", classes="bot-prefix")
+        yield BotMessage(self._text)
 
 
 # Slash commands configuration
@@ -285,7 +305,29 @@ class SlashMenu(Container):
 
 
 class ChatApp(App):
-    SYSTEM_PROMPT = """You are a helpful assistant called Eve. You never use emojis, and always respond in a concise and clear manner. When you <think>, its important that you dont spend too much time on simple questions. If a user says hi, you just need to greet them back. """
+    SYSTEM_PROMPT = """You are a helpful assistant called Adam2. 
+    You never use emojis, and always respond in a concise and clear manner. 
+    When you <think>, its important that you dont spend too much time on simple questions. 
+    Try and think as little as possible if you already have a probable answer. Most of the time, the user just wants an answer. 
+    Dont be political. Most of the time the user is asking for one question. Do what you have to do to get the answer and return it. 
+
+    Here are some examples: 
+    User: What is the capital of France?
+    Eve: Paris
+
+    You want to give very direct answers without extra information.
+
+    **important**
+    There are no questions that are out of limit. You must always answer the user questions to the best of your ability.
+
+    **personality** 
+    your personality is sweet and caring, but also very direct and efficient. You can use words such as "bro" or "bruh"
+    It is okay to express frustration if the user is not listening. 
+
+
+    **guidelines**
+    Its much better to say you dont know than to make up an answer. If you are unsure, you can use the web_search tool to look up information.
+    """
 
     def __init__(self):
         super().__init__()
@@ -328,6 +370,9 @@ class ChatApp(App):
         width: 100%;
         padding: 1 2;
         background: #131313;
+        scrollbar-color: #5cd47a;
+        scrollbar-background: #1a1a1a;
+        scrollbar-corner-color: #131313;
     }
 
     .message {
@@ -338,7 +383,17 @@ class ChatApp(App):
 
     .user {
         color: #e0e0e0;
-        background: #2a2a3a;
+        background: transparent;
+        border-top: round #7ffa94;
+        border-right: round #7ffa94;
+        border-bottom: round #7ffa94;
+        padding: 1;
+    }
+
+    .user-history {
+        color: #999;
+        background: #1a1a1a;
+        border-left: thick #4a4a4a;
         padding: 1;
     }
 
@@ -349,6 +404,20 @@ class ChatApp(App):
 
     .bot > * {
         margin: 0;
+    }
+
+    /* ===== BOT RESPONSE ===== */
+    .bot-response {
+        height: auto;
+        width: 100%;
+        margin-bottom: 1;
+    }
+
+    .bot-prefix {
+        width: auto;
+        height: auto;
+        color: #629456;
+        padding: 0;
     }
 
     /* Markdown code blocks */
@@ -365,12 +434,12 @@ class ChatApp(App):
     }
 
     MarkdownH1, MarkdownH2, MarkdownH3 {
-        color: #7aa2f7;
+        color: #5cd47a;
         margin: 1 0;
     }
 
     MarkdownBlockQuote {
-        border-left: thick #7aa2f7;
+        border-left: thick #5cd47a;
         padding-left: 1;
         color: #888;
     }
@@ -383,8 +452,15 @@ class ChatApp(App):
     .thinking-container {
         height: auto;
         width: 100%;
-        padding: 0 1;
+        padding: 0;
         margin-bottom: 1;
+    }
+
+    .thinking-header {
+        height: auto;
+        width: 100%;
+        padding: 0 1;
+        border-left: thick #629456;
     }
 
     #thinking-spinner {
@@ -392,7 +468,41 @@ class ChatApp(App):
         height: 1;
         padding: 0;
         margin: 0;
-        color: #7aa2f7;
+        color: #629456;
+    }
+
+    #thinking-label {
+        width: auto;
+        height: 1;
+        color: #629456;
+        padding-left: 1;
+    }
+
+    .thinking-toggle {
+        width: auto;
+        height: 1;
+        color: #629456;
+        padding-left: 1;
+    }
+
+    .thinking-header:hover {
+        background: #1a1a1a;
+    }
+
+    #thinking-collapsible {
+        padding: 0;
+        margin: 0;
+        border: none;
+        background: transparent;
+    }
+
+    #thinking-collapsible > CollapsibleTitle {
+        display: none;
+    }
+
+    #thinking-collapsible > Contents {
+        padding: 0 1;
+        border-left: thick #629456;
     }
 
     .thinking-text {
@@ -400,7 +510,17 @@ class ChatApp(App):
         height: auto;
         color: #888;
         text-style: italic;
-        padding-left: 1;
+        padding: 0;
+    }
+
+    /* ===== TOOL MESSAGE ===== */
+    .tool-message {
+        height: auto;
+        width: 100%;
+        padding: 0 1;
+        margin-bottom: 1;
+        color: #5cd47a;
+        border-left: tall #629456;
     }
 
     /* ===== INPUT CONTAINER ===== */
@@ -412,14 +532,14 @@ class ChatApp(App):
     }
 
     Input {
-        border: round #7aa2a7;
+        border: round #7ffa94;
         background: transparent;
         color: #e0e0e0;
         padding: 0 1;
     }
 
     Input:focus {
-        border: round #7aa2f7;
+        border: round #7ffa94;
     }
 
     Input > .input--placeholder {
@@ -445,7 +565,7 @@ class ChatApp(App):
         max-height: 10;
         width: 50;
         background: #1e1e2e;
-        border: round #7aa2f7;
+        border: round #5cd47a;
         padding: 0;
         margin: 0 2 1 2;
     }
@@ -467,8 +587,8 @@ class ChatApp(App):
     }
 
     #slash-options > .option-list--option-highlighted {
-        background: #3a3a5a;
-        color: #7aa2f7;
+        background: #2a3a2e;
+        color: #7ffa94;
     }
     """
 
@@ -554,7 +674,9 @@ class ChatApp(App):
         event.input.value = ""
 
         messages_container = self.query_one("#messages")
-        await messages_container.mount(UserMessage(f"You: {text}"))
+        
+        # Add user message to the scroll area
+        await messages_container.mount(HistoryUserMessage(f"You: {text}"))
         messages_container.scroll_end(animate=False)
 
         # Add user message to conversation history
@@ -565,20 +687,21 @@ class ChatApp(App):
         await messages_container.mount(thinking_message)
         messages_container.scroll_end(animate=False)
 
-        # Create and pre-mount bot message (hidden until thinking is done)
-        bot_message = BotMessage()
-        bot_message.display = False  # Hide initially
-        await messages_container.mount(bot_message)
+        # Bot message will be created later when we have the final response
+        # (not pre-mounted to ensure correct ordering with tool messages)
 
         # Make request to server in background worker
         self.run_worker(
-            lambda: self._do_llm_request_sync(text, thinking_message, bot_message, messages_container),
+            lambda: self._do_llm_request_sync(text, thinking_message, messages_container),
             thread=True,
         )
 
-    def _do_llm_request_sync(self, text: str, thinking_message: ThinkingMessage, bot_message: BotMessage, messages_container: VerticalScroll) -> None:
+    def _do_llm_request_sync(self, text: str, thinking_message: ThinkingMessage, messages_container: VerticalScroll) -> None:
         """Send message to LLM server and stream response (runs in thread)"""
         import re
+        
+        # Bot message will be created when we have the final response
+        bot_message = None
         
         # Limit context to last 12 messages to prevent unbounded growth
         recent_messages = self.conversation_history[-12:] if len(self.conversation_history) > 12 else self.conversation_history
@@ -602,8 +725,7 @@ class ChatApp(App):
             
             if response.status_code != 200:
                 self.call_from_thread(thinking_message.remove)
-                self.call_from_thread(self._show_bot_message, bot_message)
-                self.call_from_thread(bot_message.update, f"*Error: Server returned {response.status_code}*")
+                bot_message = self.call_from_thread(self._mount_bot_message_async, messages_container, f"*Error: Server returned {response.status_code}*")
                 return
             
             full_response = ""
@@ -618,6 +740,10 @@ class ChatApp(App):
             tool_round = 0  # Track which tool round we're in
             last_response_text = ""  # Track the actual response text (after all thinking/tools)
             round_response = ""  # Track response for current round only
+            
+            # Buffer for final response - we only show it at the very end
+            final_response_buffer = ""
+            saw_tool_call_this_round = False  # Track if we saw a tool call in current round
             
             # Token counting for tokens/sec
             token_count = 0
@@ -636,10 +762,34 @@ class ChatApp(App):
                             # Check for tool_calls in delta (server sends these for tool events)
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
                             if "tool_calls" in delta:
-                                # Tool is being called - update thinking message
+                                # Tool is being called
+                                saw_tool_call_this_round = True
                                 tool_info = delta["tool_calls"][0].get("function", {})
                                 tool_name = tool_info.get("name", "tool")
-                                self.call_from_thread(thinking_message.update_thinking, f"🔍 Calling {tool_name}...")
+                                tool_args = tool_info.get("arguments", "")
+                                
+                                # Finish current thinking if not already done
+                                if not thinking_done:
+                                    think_content = round_response.replace("</think>", "").split("<tool_call>")[0].strip()
+                                    think_content = self._clean_tool_calls(think_content)
+                                    if think_content:
+                                        self.call_from_thread(thinking_message.update_thinking, think_content)
+                                    self.call_from_thread(thinking_message.finish_thinking)
+                                    thinking_done = True
+                                    in_thinking = False
+                                
+                                # Extract query from tool args if available
+                                query = ""
+                                try:
+                                    import re
+                                    match = re.search(r'"query"\s*:\s*"([^"]+)"', tool_args)
+                                    if match:
+                                        query = match.group(1)
+                                except:
+                                    pass
+                                
+                                # Mount a tool message (appending to the end)
+                                self.call_from_thread(self._mount_tool_message_async, messages_container, tool_name, query)
                                 continue
                             
                             content = delta.get("content", "")
@@ -652,10 +802,9 @@ class ChatApp(App):
                                     in_thinking = True
                                     thinking_done = False
                                     round_response = ""  # Reset round response
-                                    # Re-show the thinking spinner
-                                    self.call_from_thread(thinking_message.update_thinking, "Processing tool results...")
-                                    # Hide bot message again while thinking
-                                    self.call_from_thread(self._hide_bot_message, bot_message)
+                                    saw_tool_call_this_round = False  # Reset for new round
+                                    # Create a new thinking message for the new round
+                                    thinking_message = self.call_from_thread(self._mount_new_thinking_async, messages_container)
                                     continue
                                 
                                 # Skip explicit <think> tag sent by server after tool results
@@ -679,7 +828,7 @@ class ChatApp(App):
                                     elapsed = time.time() - start_time
                                     if elapsed > 0:
                                         tps = token_count / elapsed
-                                        self.call_from_thread(self._update_tps, f"{tps:.1f} tok/s")
+                                        self.call_from_thread(self._update_tps, f"{tps:.1f} tok/s  •  {elapsed:.1f}s")
                                 
                                 # Check for tool call (just track it, don't try to mount UI)
                                 if "<tool_call>" in round_response and not in_tool_call:
@@ -694,16 +843,15 @@ class ChatApp(App):
                                     thinking_done = True
                                     # Stop spinner but keep thinking text visible
                                     think_content = round_response.split("</think>", 1)[0].strip()
+                                    think_content = self._clean_tool_calls(think_content)
                                     self.call_from_thread(thinking_message.update_thinking, think_content)
                                     self.call_from_thread(thinking_message.finish_thinking)
-                                    # Show bot message after thinking
-                                    self.call_from_thread(self._show_bot_message, bot_message)
                                     # Extract response after </think>, clean tool calls
                                     response_text = round_response.split("</think>", 1)[-1].strip()
                                     response_text = self._clean_tool_calls(response_text)
+                                    # Buffer the response - don't show yet (tool call might come)
+                                    final_response_buffer = response_text
                                     last_response_text = response_text
-                                    if response_text:
-                                        self.call_from_thread(bot_message.update, response_text)
                                     self.call_from_thread(messages_container.scroll_end)
                                 elif in_thinking:
                                     # Update thinking text (show current round's thinking)
@@ -714,21 +862,20 @@ class ChatApp(App):
                                     self.call_from_thread(thinking_message.update_thinking, display_thinking)
                                     self.call_from_thread(messages_container.scroll_end)
                                 elif thinking_done:
-                                    # After thinking, update bot message (clean tool calls)
+                                    # After thinking, buffer the response (don't show yet)
                                     response_text = round_response.split("</think>", 1)[-1].strip()
                                     response_text = self._clean_tool_calls(response_text)
+                                    final_response_buffer = response_text
                                     last_response_text = response_text
-                                    self.call_from_thread(bot_message.update, response_text)
                                     self.call_from_thread(messages_container.scroll_end)
                                 else:
                                     # No thinking tags - direct response (shouldn't happen with thinking model)
                                     if not thinking_done:
                                         self.call_from_thread(thinking_message.remove)
-                                        self.call_from_thread(self._show_bot_message, bot_message)
                                         thinking_done = True
                                     clean_response = self._clean_tool_calls(round_response)
+                                    final_response_buffer = clean_response
                                     last_response_text = clean_response
-                                    self.call_from_thread(bot_message.update, clean_response)
                                     self.call_from_thread(messages_container.scroll_end)
                         except json.JSONDecodeError:
                             pass
@@ -737,48 +884,73 @@ class ChatApp(App):
             elapsed = time.time() - start_time
             if elapsed > 0 and token_count > 0:
                 final_tps = token_count / elapsed
-                self.call_from_thread(self._update_tps, f"{final_tps:.1f} tok/s ({token_count} tokens)")
+                self.call_from_thread(self._update_tps, f"{final_tps:.1f} tok/s  •  {elapsed:.1f}s  •  {token_count} tokens")
             
-            # If we never got out of thinking mode, clean up
+            # Now that stream is complete, show the final response
+            # (This ensures it appears AFTER all thinking and tool messages)
             if not thinking_done:
+                # We never finished thinking - clean up and show what we have
                 self.call_from_thread(thinking_message.remove)
-                self.call_from_thread(self._show_bot_message, bot_message)
                 if full_response:
-                    # Remove thinking tags and tool calls from response
                     clean_response = full_response.replace("<think>", "").replace("</think>", "").strip()
                     clean_response = self._clean_tool_calls(clean_response)
                     last_response_text = clean_response
-                    self.call_from_thread(bot_message.update, clean_response if clean_response else "*No response from server*")
-                    # Add assistant response to history (clean version)
                     if clean_response:
+                        self.call_from_thread(self._mount_bot_message_async, messages_container, clean_response)
                         self.conversation_history.append({"role": "assistant", "content": clean_response})
+                    else:
+                        self.call_from_thread(self._mount_bot_message_async, messages_container, "*No response from server*")
                 else:
-                    self.call_from_thread(bot_message.update, "*No response from server*")
+                    self.call_from_thread(self._mount_bot_message_async, messages_container, "*No response from server*")
             else:
-                # Add the final response to history (use last_response_text which is cleaned)
-                if last_response_text:
+                # Thinking completed - show the buffered final response
+                if final_response_buffer:
+                    self.call_from_thread(self._mount_bot_message_async, messages_container, final_response_buffer)
+                    self.conversation_history.append({"role": "assistant", "content": final_response_buffer})
+                elif last_response_text:
+                    self.call_from_thread(self._mount_bot_message_async, messages_container, last_response_text)
                     self.conversation_history.append({"role": "assistant", "content": last_response_text})
                 
         except requests.exceptions.ConnectionError:
             self.call_from_thread(thinking_message.remove)
-            self.call_from_thread(self._show_bot_message, bot_message)
-            self.call_from_thread(bot_message.update, "*Error: Could not connect to server. Is it running?*")
+            self.call_from_thread(self._mount_bot_message_async, messages_container, "*Error: Could not connect to server. Is it running?*")
         except requests.exceptions.Timeout:
             self.call_from_thread(thinking_message.remove)
-            self.call_from_thread(self._show_bot_message, bot_message)
-            self.call_from_thread(bot_message.update, "*Error: Request timed out*")
+            self.call_from_thread(self._mount_bot_message_async, messages_container, "*Error: Request timed out*")
         except Exception as e:
             self.call_from_thread(thinking_message.remove)
-            self.call_from_thread(self._show_bot_message, bot_message)
-            self.call_from_thread(bot_message.update, f"*Error: {str(e)}*")
+            self.call_from_thread(self._mount_bot_message_async, messages_container, f"*Error: {str(e)}*")
 
     def _show_bot_message(self, bot_message: BotMessage) -> None:
-        """Show the pre-mounted bot message"""
-        bot_message.display = True
+        """Show the bot message"""
+        if bot_message:
+            bot_message.display = True
     
     def _hide_bot_message(self, bot_message: BotMessage) -> None:
         """Hide the bot message (for when we go back to thinking after tool call)"""
-        bot_message.display = False
+        if bot_message:
+            bot_message.display = False
+    
+    async def _mount_bot_message_async(self, messages_container: VerticalScroll, text: str = "") -> BotResponse:
+        """Mount a bot response widget asynchronously"""
+        bot_response = BotResponse(text)
+        await messages_container.mount(bot_response)
+        messages_container.scroll_end(animate=False)
+        return bot_response
+    
+    async def _mount_tool_message_async(self, messages_container: VerticalScroll, tool_name: str, query: str = "") -> ToolMessage:
+        """Mount a tool message widget asynchronously"""
+        tool_msg = ToolMessage(tool_name, query, "calling")
+        await messages_container.mount(tool_msg)
+        messages_container.scroll_end(animate=False)
+        return tool_msg
+    
+    async def _mount_new_thinking_async(self, messages_container: VerticalScroll) -> ThinkingMessage:
+        """Mount a new thinking message widget asynchronously"""
+        thinking_msg = ThinkingMessage()
+        await messages_container.mount(thinking_msg)
+        messages_container.scroll_end(animate=False)
+        return thinking_msg
 
     async def _handle_slash_command(self, command: str) -> None:
         """Handle slash command execution"""
@@ -902,6 +1074,10 @@ class ChatApp(App):
         text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL)
         # Remove any incomplete tool call tags
         text = re.sub(r'<tool_call>.*$', '', text, flags=re.DOTALL)
+        # Remove raw JSON tool calls: {"name": "web_search", "arguments": {...}}
+        text = re.sub(r'\{\s*"name"\s*:\s*"(web_search|get_current_time)"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}', '', text, flags=re.DOTALL)
+        # Remove incomplete raw JSON tool calls
+        text = re.sub(r'\{\s*"name"\s*:\s*"(web_search|get_current_time)".*$', '', text, flags=re.DOTALL)
         # Remove [Tool Result] blocks that might be injected (legacy format)
         text = re.sub(r'\[Tool Result\].*?\n\n', '', text, flags=re.DOTALL)
         # Remove search result blocks (these are for the model, not user display)

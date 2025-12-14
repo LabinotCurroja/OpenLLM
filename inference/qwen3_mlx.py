@@ -180,14 +180,22 @@ def generate_tokens_mlx(
         chunk = response.text
         
         if chunk:
-            generated_text += chunk
-            yield chunk
-            
-            # Check stop sequences
+            # Check stop sequences BEFORE yielding
             if stop:
                 for stop_seq in stop:
-                    if stop_seq in generated_text:
+                    # Check if stop sequence is in the accumulated text + new chunk
+                    combined = generated_text + chunk
+                    if stop_seq in combined:
+                        # Find where the stop sequence starts
+                        stop_idx = combined.find(stop_seq)
+                        # Only yield up to (and including) the stop sequence
+                        remaining = combined[len(generated_text):stop_idx + len(stop_seq)]
+                        if remaining:
+                            yield remaining
                         return
+            
+            generated_text += chunk
+            yield chunk
 
 
 def generate_full_mlx(
