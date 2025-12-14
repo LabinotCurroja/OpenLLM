@@ -3,6 +3,7 @@ Qwen3-4B OpenAI-Compatible API Server
 ======================================
 A simple HTTP server that provides an OpenAI-compatible /v1/chat/completions endpoint.
 Supports streaming via Server-Sent Events (SSE).
+Includes tool calling support with web search.
 """
 
 import json
@@ -25,15 +26,26 @@ from qwen3_pytorch import (
 )
 from transformers import AutoTokenizer
 
+from tools import (
+    AVAILABLE_TOOLS,
+    get_tools_system_prompt,
+    parse_tool_calls,
+    has_tool_calls,
+    remove_tool_calls,
+    execute_tool,
+    format_tool_result,
+)
+
 # ============================================================================
 # Configuration
 # ============================================================================
 
-MODEL_NAME = "qwen3-4b"
-DEFAULT_MAX_TOKENS = 4096
+MODEL_NAME = "qwen3-4b-thinking"
+DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_P = 0.9
-DEFAULT_TOP_K = 50
+DEFAULT_TOP_K = 20
+ENABLE_TOOLS = True  # Enable tool calling by default
 
 # ============================================================================
 # Model Loading
@@ -61,7 +73,7 @@ def load_model():
     
     # Download model
     print("⬇️  Downloading model (if needed)...")
-    model_path = download_model("Qwen/Qwen3-4B")
+    model_path = download_model("Qwen/Qwen3-4B-Thinking-2507")
     
     # Load config
     print("⚙️  Loading configuration...")
@@ -234,6 +246,89 @@ def generate_full(
     return "".join(tokens)
 
 
+def generate_with_tools(
+    messages: List[Dict[str, str]],
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float = DEFAULT_TOP_P,
+    top_k: int = DEFAULT_TOP_K,
+    stop: Optional[List[str]] = None,
+    max_tool_rounds: int = 3,
+) -> Generator[Dict[str, Any], None, None]:
+    """
+    Generate response with tool calling support.
+    
+    Yields events:
+    - {"type": "token", "content": str} - Regular token
+    - {"type": "tool_call", "name": str, "arguments": dict} - Tool being called
+    - {"type": "tool_result", "name": str, "result": dict} - Tool result
+    - {"type": "done"} - Generation complete
+    """
+    # Inject tools system prompt into the first system message or prepend it
+    augmented_messages = list(messages)
+    tools_prompt = get_tools_system_prompt()
+    
+    has_system = any(m.get("role") == "system" for m in augmented_messages)
+    if has_system:
+        for i, m in enumerate(augmented_messages):
+            if m.get("role") == "system":
+                augmented_messages[i] = {
+                    "role": "system",
+                    "content": m["content"] + "\n\n" + tools_prompt
+                }
+                break
+    else:
+        augmented_messages.insert(0, {"role": "system", "content": tools_prompt})
+    
+    tool_round = 0
+    
+    while tool_round < max_tool_rounds:
+        # Generate response
+        full_response = ""
+        for token in generate_tokens(augmented_messages, max_tokens, temperature, top_p, top_k, stop):
+            full_response += token
+            yield {"type": "token", "content": token}
+        
+        # Check for tool calls
+        if has_tool_calls(full_response):
+            tool_calls = parse_tool_calls(full_response)
+            
+            if not tool_calls:
+                break
+            
+            # Add assistant's message with tool call to conversation
+            augmented_messages.append({
+                "role": "assistant",
+                "content": full_response
+            })
+            
+            # Execute each tool and add results
+            for call in tool_calls:
+                tool_name = call["name"]
+                tool_args = call["arguments"]
+                
+                yield {"type": "tool_call", "name": tool_name, "arguments": tool_args}
+                
+                # Execute the tool
+                result = execute_tool(tool_name, tool_args)
+                
+                yield {"type": "tool_result", "name": tool_name, "result": result}
+                
+                # Add tool result to conversation
+                formatted_result = format_tool_result(tool_name, result)
+                augmented_messages.append({
+                    "role": "user",
+                    "content": f"[Tool Result]\n{formatted_result}"
+                })
+            
+            tool_round += 1
+        else:
+            # No tool calls, we're done
+            break
+    
+    yield {"type": "done"}
+
+
 # ============================================================================
 # Flask App
 # ============================================================================
@@ -303,6 +398,7 @@ def stream_response(
     temperature: float,
     top_p: float,
     stop: Optional[List[str]],
+    use_tools: bool = False,
 ) -> Generator[str, None, None]:
     """Stream SSE response."""
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
@@ -311,10 +407,43 @@ def stream_response(
     initial_chunk = create_chat_completion_chunk("", chunk_id=chunk_id)
     yield f"data: {json.dumps(initial_chunk)}\n\n"
     
-    # Stream tokens
-    for token in generate_tokens(messages, max_tokens, temperature, top_p, stop=stop):
-        chunk = create_chat_completion_chunk(token, chunk_id=chunk_id)
-        yield f"data: {json.dumps(chunk)}\n\n"
+    if use_tools and ENABLE_TOOLS:
+        # Use tool-enabled generation
+        for event in generate_with_tools(messages, max_tokens, temperature, top_p, stop=stop):
+            if event["type"] == "token":
+                chunk = create_chat_completion_chunk(event["content"], chunk_id=chunk_id)
+                yield f"data: {json.dumps(chunk)}\n\n"
+            elif event["type"] == "tool_call":
+                # Send a special chunk to notify client about tool call
+                tool_chunk = {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": MODEL_NAME,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [{
+                                "function": {
+                                    "name": event["name"],
+                                    "arguments": json.dumps(event["arguments"])
+                                }
+                            }]
+                        },
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(tool_chunk)}\n\n"
+            elif event["type"] == "tool_result":
+                # Send tool result as a special marker in content
+                result_text = f"\n[Searching: {event['name']}...]\n"
+                chunk = create_chat_completion_chunk(result_text, chunk_id=chunk_id)
+                yield f"data: {json.dumps(chunk)}\n\n"
+    else:
+        # Standard generation without tools
+        for token in generate_tokens(messages, max_tokens, temperature, top_p, stop=stop):
+            chunk = create_chat_completion_chunk(token, chunk_id=chunk_id)
+            yield f"data: {json.dumps(chunk)}\n\n"
     
     # Send final chunk
     final_chunk = create_chat_completion_chunk("", finish_reason="stop", chunk_id=chunk_id)
@@ -336,6 +465,13 @@ def chat_completions():
         top_p = data.get("top_p", DEFAULT_TOP_P)
         stop = data.get("stop")
         
+        # Tool calling support
+        tools = data.get("tools")  # OpenAI format
+        use_tools = data.get("use_tools", False)  # Simple boolean flag
+        
+        # Enable tools if either tools array is provided or use_tools is True
+        enable_tools = bool(tools) or use_tools
+        
         if isinstance(stop, str):
             stop = [stop]
         
@@ -345,7 +481,7 @@ def chat_completions():
         if stream:
             # Streaming response
             return Response(
-                stream_response(messages, max_tokens, temperature, top_p, stop),
+                stream_response(messages, max_tokens, temperature, top_p, stop, use_tools=enable_tools),
                 mimetype="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -355,8 +491,16 @@ def chat_completions():
             )
         else:
             # Non-streaming response
-            content = generate_full(messages, max_tokens, temperature, top_p, stop=stop)
-            response = create_chat_completion_response(content)
+            if enable_tools:
+                # Collect all tokens from tool-enabled generation
+                full_content = ""
+                for event in generate_with_tools(messages, max_tokens, temperature, top_p, stop=stop):
+                    if event["type"] == "token":
+                        full_content += event["content"]
+                response = create_chat_completion_response(full_content)
+            else:
+                content = generate_full(messages, max_tokens, temperature, top_p, stop=stop)
+                response = create_chat_completion_response(content)
             return jsonify(response)
     
     except Exception as e:
@@ -382,7 +526,22 @@ def list_models():
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
-    return jsonify({"status": "ok", "model": MODEL_NAME})
+    return jsonify({"status": "ok", "model": MODEL_NAME, "tools_enabled": ENABLE_TOOLS})
+
+
+@app.route("/v1/tools", methods=["GET"])
+def list_tools():
+    """List available tools."""
+    import os
+    brave_configured = bool(os.environ.get("BRAVE_API_KEY", ""))
+    return jsonify({
+        "tools": AVAILABLE_TOOLS,
+        "tools_enabled": ENABLE_TOOLS,
+        "search_configured": brave_configured,
+        "setup_instructions": {
+            "brave_search": "Set BRAVE_API_KEY environment variable. Get free key at https://brave.com/search/api/"
+        }
+    })
 
 
 @app.route("/ping", methods=["GET"])

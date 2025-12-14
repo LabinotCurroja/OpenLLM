@@ -15,5 +15,18 @@ rich>=13.0.0
 flask>=3.0.0
 flask-cors>=4.0.0
 
+# Tool calling (requests is used for Brave Search API)
+# requests is already a dependency of other packages
+
 # Optional: For CUDA INT8 quantization (not needed on Mac)
 # bitsandbytes>=0.41.0
+
+# =============================================================================
+# Tool Calling Setup (Web Search)
+# =============================================================================
+# To enable web search, get a free Brave Search API key:
+# 1. Go to https://brave.com/search/api/
+# 2. Sign up for free (2,000 queries/month, no credit card required)
+# 3. Set the environment variable before running the server:
+#    export BRAVE_API_KEY="your-api-key-here"
+# =============================================================================

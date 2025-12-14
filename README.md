@@ -13,6 +13,7 @@ Currently supports **Qwen3-4B**, optimized for Apple Silicon Macs but also works
 - **Pure PyTorch** - No llama.cpp, vLLM, or other inference frameworks required
 - **Apple Silicon Optimized** - First-class MPS (Metal Performance Shaders) support
 - **OpenAI-Compatible API** - Drop-in replacement for OpenAI API clients
+- **Tool Calling** - Web search support via Brave Search API (free tier)
 - **Streaming Support** - Real-time token streaming via Server-Sent Events
 - **Beautiful TUI** - Terminal user interface for interactive chat
 - **Optimized Inference** - Pre-allocated KV cache, torch.compile, and more
@@ -89,7 +90,57 @@ python server.py
 
 This starts an OpenAI-compatible API server on `http://localhost:5001`.
 
-#### API Usage
+## 🔍 Tool Calling (Web Search)
+
+The model supports tool calling with web search capabilities. When enabled, the model can search the web for current information.
+
+### Setup (Free)
+
+1. Get a free Brave Search API key (2,000 queries/month, no credit card):
+   - Go to https://brave.com/search/api/
+   - Sign up and create an API key
+
+2. Set the environment variable:
+   ```bash
+   export BRAVE_API_KEY="your-api-key-here"
+   ```
+
+3. Start the server - tool calling is enabled automatically:
+   ```bash
+   python server.py
+   ```
+
+### Using Tool Calling
+
+The model will automatically search when it needs current information:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:5001/v1", api_key="not-needed")
+
+# Ask something that needs current info
+response = client.chat.completions.create(
+    model="qwen3-4b",
+    messages=[{"role": "user", "content": "What are the latest developments in AI?"}],
+    extra_body={"use_tools": True}  # Enable tool calling
+)
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `web_search` | Search the web for current information |
+| `get_current_time` | Get the current date and time |
+
+### Check Tool Status
+
+```bash
+curl http://localhost:5001/v1/tools
+```
+
+## 📡 API Usage
 
 ```bash
 # Chat completion (streaming)
@@ -99,6 +150,16 @@ curl http://localhost:5001/v1/chat/completions \
     "model": "qwen3-4b",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
+  }'
+
+# Chat completion with tool calling
+curl http://localhost:5001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3-4b",
+    "messages": [{"role": "user", "content": "What is the weather like today?"}],
+    "stream": true,
+    "use_tools": true
   }'
 
 # Chat completion (non-streaming)
