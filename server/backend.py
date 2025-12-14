@@ -6,8 +6,17 @@ Automatically selects the best available backend.
 """
 
 import platform
+import sys
+from pathlib import Path
 from typing import Optional, List, Dict, Generator, Any
 import os
+
+# Add inference folder to path (sibling directory)
+_server_dir = Path(__file__).parent
+_project_root = _server_dir.parent
+_inference_dir = _project_root / "inference"
+if str(_inference_dir) not in sys.path:
+    sys.path.insert(0, str(_inference_dir))
 
 # ============================================================================
 # Backend Detection

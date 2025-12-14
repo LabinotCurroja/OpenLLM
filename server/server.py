@@ -13,10 +13,19 @@ Backends:
 import json
 import os
 import platform
+import sys
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Generator
+
+# Add inference folder to path
+_server_dir = Path(__file__).parent
+_project_root = _server_dir.parent
+_inference_dir = _project_root / "inference"
+if str(_inference_dir) not in sys.path:
+    sys.path.insert(0, str(_inference_dir))
 
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
