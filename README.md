@@ -218,57 +218,6 @@ MLX uses pre-quantized INT4 models from the MLX Community:
 
 The quantization is done at the weight level using 4-bit integers, reducing memory by 4x while maintaining quality through careful calibration.
 
-## Configuration
-
-### Generation Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `max_tokens` | 2048 | Maximum tokens to generate |
-| `temperature` | 0.7 | Sampling temperature (0 = greedy) |
-| `top_p` | 0.9 | Nucleus sampling threshold |
-| `top_k` | 50 | Top-k sampling |
-
-### Model Configuration (Qwen3-4B)
-
-| Parameter | Value |
-|-----------|-------|
-| Hidden size | 2560 |
-| Layers | 36 |
-| Attention heads | 32 Q / 8 KV |
-| Head dimension | 128 |
-| Intermediate size | 9728 |
-| Vocab size | 151,936 |
-| Max context | 32,768 |
-| RoPE base | 1,000,000 |
-
-## Project Structure
-
-```
-OpenLLM/
-├── qwen3_pytorch.py   # PyTorch model implementation
-├── qwen3_mlx.py       # MLX model implementation (Apple Silicon)
-├── backend.py         # Backend abstraction (auto-selects MLX/PyTorch)
-├── server.py          # OpenAI-compatible API server
-├── tui.py             # Terminal UI for interactive chat
-├── tools.py           # Tool calling (web search, etc.)
-├── requirements.txt   # Python dependencies
-├── assets/
-│   └── dragon.png     # Logo
-└── README.md
-```
-
-## Extending to Other Models
-
-The implementation is designed to be adaptable. To add a new model:
-
-1. **Update `Qwen3Config`** with the new model's configuration
-2. **Adjust layer implementations** if architecture differs
-3. **Update weight mapping** in `load_weights()` if needed
-4. **Update tokenizer loading** for the new model
-
-The core components (RMSNorm, RoPE, GQA, SwiGLU, KVCache) are reusable across most modern LLMs.
-
 ## Acknowledgments
 
 - [Qwen Team](https://github.com/QwenLM/Qwen) for the Qwen3 model
