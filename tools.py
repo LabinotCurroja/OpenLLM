@@ -10,7 +10,17 @@ import re
 import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from pathlib import Path
 import requests
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Look for .env in the same directory as this file
+    env_path = Path(__file__).parent / ".env"
+    load_dotenv(env_path)
+except ImportError:
+    pass  # python-dotenv not installed, rely on system env vars
 
 # ============================================================================
 # Tool Definitions (OpenAI-compatible format)
