@@ -273,6 +273,7 @@ self.lm_head = lambda x: F.linear(x, self.model.embed_tokens.weight)
 
 | Configuration | Memory | Notes |
 |--------------|--------|-------|
+| MLX INT4 (recommended on Mac) | ~2GB | Apple Silicon only, fastest |
 | bfloat16 (default) | ~8GB | Recommended for M1 Pro+ |
 | float16 | ~8GB | Slightly faster on some hardware |
 | float32 | ~16GB | Won't fit on most Macs |
@@ -280,6 +281,49 @@ self.lm_head = lambda x: F.linear(x, self.model.embed_tokens.weight)
 The KV cache adds additional memory during generation:
 - ~50MB per 1000 tokens of context
 - Pre-allocated for `max_new_tokens` (default 2048)
+
+## 🍎 MLX Backend (Apple Silicon)
+
+For Apple Silicon Macs (M1/M2/M3/M4), we provide an MLX backend with INT4 quantization that offers significant improvements:
+
+### Benefits
+
+| Aspect | PyTorch (bfloat16) | MLX (INT4) |
+|--------|-------------------|------------|
+| **Memory** | ~8GB | ~2GB |
+| **Speed** | Good (via MPS) | 2-3x faster |
+| **Native** | Via Metal adapter | Native Apple Silicon |
+
+### Installation
+
+```bash
+# Install MLX dependencies (Apple Silicon only)
+pip install mlx mlx-lm
+```
+
+### Usage
+
+The backend is auto-selected based on your platform. On Apple Silicon with MLX installed, it will automatically use the MLX backend.
+
+```bash
+# Auto-select best backend
+python server.py
+
+# Force a specific backend
+OPENLLM_BACKEND=mlx python server.py
+OPENLLM_BACKEND=pytorch python server.py
+
+# Run MLX directly
+python qwen3_mlx.py
+```
+
+### How It Works
+
+MLX uses pre-quantized INT4 models from the MLX Community:
+- `mlx-community/Qwen3-4B-4bit` - Base model (~2GB)
+- `mlx-community/Qwen3-4B-Thinking-2507-4bit` - Thinking variant
+
+The quantization is done at the weight level using 4-bit integers, reducing memory by 4x while maintaining quality through careful calibration.
 
 ## 🔧 Configuration
 
@@ -309,9 +353,12 @@ The KV cache adds additional memory during generation:
 
 ```
 OpenLLM/
-├── qwen3_pytorch.py   # Core model implementation
+├── qwen3_pytorch.py   # PyTorch model implementation
+├── qwen3_mlx.py       # MLX model implementation (Apple Silicon)
+├── backend.py         # Backend abstraction (auto-selects MLX/PyTorch)
 ├── server.py          # OpenAI-compatible API server
 ├── tui.py             # Terminal UI for interactive chat
+├── tools.py           # Tool calling (web search, etc.)
 ├── requirements.txt   # Python dependencies
 ├── assets/
 │   └── dragon.png     # Logo

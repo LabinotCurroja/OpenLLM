@@ -110,12 +110,12 @@ class TopBar(Horizontal):
     
     def check_server(self) -> None:
         try:
-            response = requests.get("http://localhost:5000/ping", timeout=2.0)
+            response = requests.get("http://localhost:8000/ping", timeout=2.0)
             self.server_ready = response.status_code == 200 and response.json().get("status") == "success"
             
             # Check tools status
             if self.server_ready:
-                tools_response = requests.get("http://localhost:5000/v1/tools", timeout=2.0)
+                tools_response = requests.get("http://localhost:8000/v1/tools", timeout=2.0)
                 if tools_response.status_code == 200:
                     tools_data = tools_response.json()
                     self.tools_ready = tools_data.get("search_configured", False)
@@ -437,7 +437,7 @@ class ChatApp(App):
         
         try:
             response = requests.post(
-                "http://localhost:5000/v1/chat/completions",
+                "http://localhost:8000/v1/chat/completions",
                 json=payload,
                 stream=True,
                 timeout=120,
