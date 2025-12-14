@@ -1,14 +1,14 @@
-# OpenLLM - Pure PyTorch LLM Inference
+# OpenLLM - Open AI Usage for Everyone
 
 <p align="center">
   <img src="assets/dragon.png" width="200" alt="OpenLLM">
 </p>
 
-A **pure PyTorch implementation** for running large language models locally. No dependencies on heavy inference frameworks - just PyTorch and your hardware.
+Run large language models locally with full privacy. Your data never leaves your machine - no API calls, no cloud dependencies, just you and your hardware.
 
 Currently supports **Qwen3-4B**, optimized for Apple Silicon Macs but also works on CUDA GPUs and CPU.
 
-## ✨ Features
+## Features
 
 - **Pure PyTorch** - No llama.cpp, vLLM, or other inference frameworks required
 - **Apple Silicon Optimized** - First-class MPS (Metal Performance Shaders) support
@@ -18,7 +18,7 @@ Currently supports **Qwen3-4B**, optimized for Apple Silicon Macs but also works
 - **Beautiful TUI** - Terminal user interface for interactive chat
 - **Optimized Inference** - Pre-allocated KV cache, torch.compile, and more
 
-## 🏗️ Architecture
+## Architecture
 
 The implementation includes all core transformer components built from scratch:
 
@@ -58,7 +58,7 @@ The implementation includes all core transformer components built from scratch:
 | **SwiGLU** | Gated activation: `SiLU(gate) * up` for better gradient flow |
 | **KV Cache** | Pre-allocated buffers for O(1) token generation |
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -90,7 +90,7 @@ python server.py
 
 This starts an OpenAI-compatible API server on `http://localhost:5001`.
 
-## 🔍 Tool Calling (Web Search)
+## Tool Calling (Web Search)
 
 The model supports tool calling with web search capabilities. When enabled, the model can search the web for current information.
 
@@ -140,7 +140,7 @@ response = client.chat.completions.create(
 curl http://localhost:5001/v1/tools
 ```
 
-## 📡 API Usage
+## API Usage
 
 ```bash
 # Chat completion (streaming)
@@ -202,21 +202,21 @@ python qwen3_pytorch.py
 
 This runs the model directly with an interactive prompt.
 
-## ⚡ Performance Optimizations
+## Performance Optimizations
 
 ### 1. Pre-allocated KV Cache
 
 The naive approach uses `torch.cat` every token, which is O(n²):
 
 ```python
-# ❌ Slow: O(n²) memory operations
+# Slow: O(n²) memory operations
 k = torch.cat([cached_k, k], dim=2)  # Copies ALL previous tokens
 ```
 
 Our implementation pre-allocates the entire cache upfront:
 
 ```python
-# ✅ Fast: O(1) per token
+# Fast: O(1) per token
 class KVCache:
     def __init__(self, batch_size, max_seq_len, ...):
         # Allocate once for all layers
@@ -269,7 +269,7 @@ The LM head shares weights with the embedding layer, saving ~400MB of memory:
 self.lm_head = lambda x: F.linear(x, self.model.embed_tokens.weight)
 ```
 
-## 📊 Memory Usage
+## Memory Usage
 
 | Configuration | Memory | Notes |
 |--------------|--------|-------|
@@ -282,7 +282,7 @@ The KV cache adds additional memory during generation:
 - ~50MB per 1000 tokens of context
 - Pre-allocated for `max_new_tokens` (default 2048)
 
-## 🍎 MLX Backend (Apple Silicon)
+## MLX Backend (Apple Silicon)
 
 For Apple Silicon Macs (M1/M2/M3/M4), we provide an MLX backend with INT4 quantization that offers significant improvements:
 
@@ -325,7 +325,7 @@ MLX uses pre-quantized INT4 models from the MLX Community:
 
 The quantization is done at the weight level using 4-bit integers, reducing memory by 4x while maintaining quality through careful calibration.
 
-## 🔧 Configuration
+## Configuration
 
 ### Generation Parameters
 
@@ -349,7 +349,7 @@ The quantization is done at the weight level using 4-bit integers, reducing memo
 | Max context | 32,768 |
 | RoPE base | 1,000,000 |
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 OpenLLM/
@@ -365,7 +365,7 @@ OpenLLM/
 └── README.md
 ```
 
-## 🛠️ Extending to Other Models
+## Extending to Other Models
 
 The implementation is designed to be adaptable. To add a new model:
 
@@ -376,13 +376,13 @@ The implementation is designed to be adaptable. To add a new model:
 
 The core components (RMSNorm, RoPE, GQA, SwiGLU, KVCache) are reusable across most modern LLMs.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [Qwen Team](https://github.com/QwenLM/Qwen) for the Qwen3 model
 - [Hugging Face](https://huggingface.co/) for model hosting and tokenizers
 - [PyTorch](https://pytorch.org/) for the amazing framework
 
-## 📄 License
+## License
 
 MIT License - feel free to use, modify, and distribute.
 
